@@ -1,0 +1,35 @@
+defaults:
+  - dataset: sat3_em_d3d
+  - model: TGLF_NN
+  - opt: default
+  - _self_
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: none
+
+project: TGLF_NN
+board: False
+plot: True
+dump_dir: "./TGLF_NN_test_dump1"
+plot_dir: "./TGLF_NN_test_dump1/eval"
+base_seed: 42
+dataset_workers: 8
+batch: 48
+restore_dir: "./TGLF_NN-res"
+restore_step: 1000000
+epochs: 1
+steps_per_epoch: 100
+loss_freq: 100
+save_freq: 100
+plot_freq: 100
+time_freq: 100
+time_warm: 10
+# accumulation is for getting the mean and standard deviation of inputs/targets in model
+# set the steps to cover approximately 1 epoch
+accumulation_steps: 100
+
+
+# only to disable hydra's logging, ignore below
+hydra:  
+  output_subdir: null
+  run:  
+    dir: .

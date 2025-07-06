@@ -1,0 +1,78 @@
+dataset_root: './tglf_sumf_data_full_madcut_filter'
+input_keys: [
+    "RLTS_3",
+    "KAPPA_LOC",
+    "ZETA_LOC",
+    "TAUS_3",
+    "VPAR_1",
+    "Q_LOC",
+    "RLNS_1",
+    "TAUS_2",
+    "Q_PRIME_LOC",
+    "P_PRIME_LOC",
+    "ZMAJ_LOC",
+    "VPAR_SHEAR_1",
+    "RLTS_2",
+    "S_DELTA_LOC",
+    "RLTS_1",
+    "RMIN_LOC",
+    "DRMAJDX_LOC",
+    "AS_3",
+    "RLNS_3",
+    "DZMAJDX_LOC",
+    "DELTA_LOC",
+    "S_KAPPA_LOC",
+    "ZEFF",
+    "VEXB_SHEAR",
+    "RMAJ_LOC",
+    "AS_2",
+    "RLNS_2",
+    "S_ZETA_LOC",
+    "BETAE_log10",
+    "XNUE_log10",
+    "DEBYE_log10"
+]
+target_keys: [
+    "OUT_G_elec",
+    "OUT_Q_elec",
+    "OUT_Q_ions",
+    "OUT_P_ions"
+]
+
+target_log10_max: [
+    5.10954480087835, #OUT_G_elec
+    6.546703026715854, #OUT_Q_elec
+    6.091617723041879 , #OUT_Q_ions
+    6.955952190237589  #OUT_P_ions
+]
+
+target_log10_min: [
+    0.0,
+    0.0,
+    0.0,
+    0.0,
+]
+
+log_ops_keys: [
+    "BETAE_log10",
+    "XNUE_log10",
+    "DEBYE_log10"
+]
+
+spectra_function_keys: [
+    "ky"
+]
+
+intermediate_target_keys: [
+    # "ql",
+    # "gw",
+    # "pots",
+    "sumf"
+]
+
+config_keys: [
+    "NMODES",
+    "NS",
+    "USE_BPER",
+    "USE_BPAR"
+]

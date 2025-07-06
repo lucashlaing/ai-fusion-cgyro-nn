@@ -1,0 +1,11 @@
+epoch_per_training: 1000
+acquisition_function: eig
+n_samples: 400000
+new_sample_size: 10000
+training_cycles: 100
+dataset_status: offline
+model_count: 16
+variance_model: drop_out
+additional_training_epochs: 50
+with_rho: True
+pool_based: True
