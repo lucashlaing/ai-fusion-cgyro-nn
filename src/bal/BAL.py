@@ -1,9 +1,18 @@
 import torch
 import json
+import time
+import numpy as np
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class BAL():
+
+    def __init__(self, cfg, dataset):
+        self.cfg = cfg
+        self.dist_json_path = self.cfg.dist_json_path
+        self.has_spectra = self.cfg.has_spectra
+        self.dataset = dataset
+    
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
         Generate bounded normal samples based on mean/std/min/max from a distribution JSON.
@@ -44,11 +53,21 @@ class BAL():
         if len(samples) < n_samples:
             raise RuntimeError(f"Only sampled {len(samples)} after {attempts} attempts.")
 
-        return torch.stack(samples)  # Shape: (n_samples, n_features)
+        x_samples = torch.stack(samples)
+
+        if(self.has_spectra):
+            input_data_expanded = np.repeat(x_samples[:, np.newaxis, :], self.spectra_mean.shape[0], axis=1)
+            spectra_function_data_expanded = np.repeat(
+                self.spectra_mean[:, np.newaxis].unsqueeze(0), len(x_samples), axis=0
+            )
+            x_samples = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2)
+            x_samples = torch.tensor(x_samples)
+
+        return x_samples # Shape: (n_samples, n_features)
 
     def get_prediction(self, input, trainer):
             """
-            Get a list of predictions according to saved models
+            Get a list of predictions according to trainer
 
             Args:
                 input: input data
@@ -90,3 +109,44 @@ class BAL():
                 return torch.stack(predictions, dim=0), torch.stack(predictions_per_ky, dim=0)
             else:
                 return torch.stack(predictions, dim=0), None
+            
+    def compute_entropy(self, variance):
+        return 0.5 * torch.log(2 * torch.pi * torch.exp(torch.tensor(1.0)) * variance)
+    
+    def get_entropy(self, candidates, trainer):
+
+
+    def eig(self, candidates, trainer):
+        
+        # 1. calcuate prior entropy
+        start_time = time.time()
+        # Get the predictions and calculate variance
+        all_predictions, all_predictions_per_ky = self.get_prediction(candidates)
+        all_predictions = all_predictions.cpu()
+        var_predictions = torch.var(all_predictions, dim=0)
+        var_predictions = torch.mean(var_predictions, dim=1)
+        prior = self. compute_entropy(var_predictions)
+        end_time = time.time()
+        print("Time to prior compute_entropy: " + str(end_time - start_time))
+
+        # 2. retrain model with predictions included in data, get new predictions
+        start_time = time.time()
+        mean_predictions = torch.mean(all_predictions, dim=0)
+        if self.has_spectra:
+            mean_predictions_per_ky = torch.mean(all_predictions_per_ky, dim=0)
+            new_predictions = self.get_entropy(trainer, (candidates, mean_predictions_per_ky, mean_predictions))
+        else:
+            new_predictions = self.get_entropy(trainer, (candidates, torch.tensor([]), mean_predictions))
+        end_time = time.time()
+        print("Time to train trial model: " + str(end_time - start_time))
+
+        # 3. calculate posterior entropy 
+        start_time = time.time()
+        new_predictions = new_predictions.cpu()
+        new_var_predictions = torch.var(new_predictions, dim=0)
+        new_var_predictions = torch.mean(new_var_predictions, dim=1)
+        posterior = self.compute_entropy(new_var_predictions)
+        end_time = time.time()
+        print("Time to posterior compute_entropy: " + str(end_time - start_time))
+
+        # 4. calcualte eig and get top samples
