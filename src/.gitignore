@@ -116,7 +116,7 @@ checkpoints/
 *.zip
 *.npz
 *.pkl
-*.ipynb
+# *.ipynb
 *.ply
 *.pt
 *.sh
