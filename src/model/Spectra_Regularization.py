@@ -14,6 +14,9 @@ class Spectra_Regularization_NN(Base):
         super(Spectra_Regularization_NN, self).__init__(cfg)
         self.cfg = cfg
         latent_dim = cfg.latent_dim
+        self.target_dim = cfg.target_dim
+        self.input_dim = cfg.input_dim
+        self.maxacum = 5e5
         # Define an additional normalizer for the target data per wavenumber
         # the defualt input and target normalizer are defined already in base
         self._targetNormalizerPerWavenumber = Normalizer(

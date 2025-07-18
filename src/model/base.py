@@ -1,5 +1,8 @@
+import sys
+sys.path.append('../')
+
 import torch
-from src.utils import Normalizer
+from utils import Normalizer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -26,7 +29,7 @@ class Base(torch.nn.Module):
         maxacum = 5e5
         input_dim = cfg.input_dim
         target_dim = cfg.target_dim
-        self._recover_pred_unit = cfg.recover_pred_unit
+        self._recover_pred_unit = False #cfg.recover_pred_unit
         self._inputNormalizer = Normalizer(input_dim, max_accumulations=maxacum, device=device, name="in_norm")
         self._targetNormalizer = Normalizer(target_dim, max_accumulations=maxacum, device=device, name="out_norm")
 

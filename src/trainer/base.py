@@ -1,27 +1,36 @@
+import sys
+sys.path.append('../')
+
+import numpy as np
 import torch
-from src.utils import WarmupCosineDecayScheduler
+from utils import WarmupCosineDecayScheduler, mean_squared_loss
 import wandb
+from tabulate import tabulate
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Base_Trainer:
-    def __init__(self, model, cfg, tc_rng):
+    def __init__(self, model, model_cfg, opt_cfg, dataset_cfg, tc_rng):
         """
         Initialize the Base_Trainer.
 
         Args:
             model: The model to be trained.
-            cfg: Configuration containing optimizer, model, and dataset configurations.
+            model_cfg: Model configuration.
+            opt_cfg: Optimizer configuration.
+            dataset_cfg: Dataset configuration.
             tc_rng: Random number generator for TensorCore operations.
         """
         self.model = model
-        self.cfg = cfg
+        self.model_cfg = model_cfg
+        self.opt_cfg = opt_cfg
+        self.dataset_cfg = dataset_cfg
         self.tc_rng = tc_rng
-        if torch.cuda.device_count() > 1:
-            print("Using", torch.cuda.device_count(), "GPUs!")
-            self.model = torch.nn.DataParallel(self.model)
-            print("Model wrapped by DataParallel", flush=True)
+        # if torch.cuda.device_count() > 1:
+        #    print("Using", torch.cuda.device_count(), "GPUs!")
+        #    self.model = torch.nn.DataParallel(self.model)
+        #    print("Model wrapped by DataParallel", flush=True)
 
         self.device = device
         self.model.to(device)
@@ -29,17 +38,19 @@ class Base_Trainer:
 
         self.optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.model.parameters()),
-            lr=cfg.opt.peak_lr,
-            weight_decay=cfg.opt.weight_decay,
+            lr=opt_cfg.peak_lr,
+            weight_decay=opt_cfg.weight_decay,
         )
         self.lr_scheduler = WarmupCosineDecayScheduler(
             optimizer=self.optimizer,
-            warmup=cfg.opt.warmup_steps,
-            max_iters=cfg.opt.decay_steps,
+            warmup=opt_cfg.warmup_steps,
+            max_iters=opt_cfg.decay_steps,
         )
 
         print(self.model, flush=True)
         self.train_step = 0
+        # self.loss_names = ["loss", "flux_loss", "sumf_loss"] # NOTE for futian zhang to check
+        self.loss_names = ["loss"] # NOTE override if needed
 
     # =====================================================================
     # Methods that need to be implemented in child classes
@@ -47,54 +58,63 @@ class Base_Trainer:
 
     def _model_forward(self, data):
         """
-        Perform a forward pass through the model.
+        A wrapper to call model.forward.
 
         Args:
             data: PyTorch Geometric Data object containing input data.
 
         Returns:
-            torch.Tensor: preded target.
+            Tuple of average mean squared error and predicted target.
+
+        Raises:
+            NotImplementedError: This method should be implemented in child classes.
         """
-        input, _ = self.get_input_target(data)
-        pred = self.model(input)
-        return pred
+        raise NotImplementedError("_model_forward need to be implemented in child class.")
 
     def get_input_target(self, data):
         """
-        Extract the input and target data from the data object.
+        Extract the label data from the input data.
 
         Args:
-            data: PyTorch Geometric Data object containing input and target data.
+            data: PyTorch Geometric Data object containing input data.
 
         Returns:
-            tuple: (input data, target data)
+            Tuple of label data and label mask.
+
+        Raises:
+            NotImplementedError: This method should be implemented in child classes.
         """
-        return data[0], data[1]
+        raise NotImplementedError("get_input_target need to be implemented in child class.")
 
     def accumulate(self, data):
         """
-        Accumulate statistics for the model's normalizers.
+        Calculate the relative error for each channel and output both mean and std.
 
         Args:
-            data: PyTorch Geometric Data object containing input and target data.
+            data: PyTorch Geometric Data object containing input data.
+
+        Returns:
+            Tuple of mean and std of the error.
+
+        Raises:
+            NotImplementedError: This method should be implemented in child classes.
         """
-        data = self.move_to_device(data)
-        input, target = self.get_input_target(data)
-        self.model.accumulate(input, target)
+        raise NotImplementedError("accumulate need to be implemented in child class.")
 
     def _loss_fn(self, data):
         """
-        Calculate the loss function using MSE.
+        Calculate the loss function.
 
         Args:
-            data: PyTorch Geometric Data object containing input and target data.
+            data: PyTorch Geometric Data object containing input data.
 
         Returns:
-            torch.Tensor: MSE loss value.
+            Loss value in RMSE.
+
+        Raises:
+            NotImplementedError: This method should be implemented in child classes.
         """
-        pred = self.get_pred(data)
-        _, target = self.get_input_target(data)
-        return torch.mean((pred - target) ** 2)
+        raise NotImplementedError("_loss_fn need to be implemented in child class.")
 
     def get_metrics(self, data):
         """
@@ -136,39 +156,6 @@ class Base_Trainer:
             NotImplementedError: This method should be implemented in child classes.
         """
         raise NotImplementedError("eval_plot need to be implemented in child class.")
-
-    def run_rollout(self, data):
-        """
-        Run the rollout for the model.
-
-        Args:
-            data: PyTorch Geometric Data object containing input data.
-
-        Raises:
-            NotImplementedError: This method should be implemented in child classes.
-        """
-        raise NotImplementedError("run_rollout need to be implemented in child class.")
-
-    def post_process_rollout(self, data, rollout_res, bi):
-        """
-        Post-process the rollout results.
-
-        Args:
-            rollout_res: Rollout results.
-
-        Raises:
-            NotImplementedError: This method should be implemented in child classes.
-        """
-        raise NotImplementedError("post_process_rollout need to be implemented in child class.")
-
-    def summarize_rollout(self):
-        """
-        Summarize the rollout results.
-
-        Raises:
-            NotImplementedError: This method should be implemented in child classes.
-        """
-        raise NotImplementedError("summarize_rollout need to be implemented in child class.")
 
     # =====================================================================
     # Methods that do not need modifications in child classes
@@ -217,7 +204,7 @@ class Base_Trainer:
 
         # Gradient clipping
         model = self.model.module if hasattr(self.model, "module") else self.model
-        torch.nn.utils.clip_grad_norm_(model.parameters(), self.cfg.opt.gnorm_clip)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), self.opt_cfg.gnorm_clip)
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
@@ -275,4 +262,157 @@ class Base_Trainer:
         loss = self.get_loss(data)
         print(f"train step: {self.train_step}, {prefix}_loss: {loss}")
         if board:
-            wandb.log({"step": self.train_step, f"{prefix}_loss": loss})
+            log_map = {"step": self.train_step}
+            if isinstance(loss, tuple):
+                for i in range(len(loss)):
+                    log_map[f"{prefix}_{self.loss_names[i]}"] = loss[i]
+            else:
+                log_map[f"{prefix}_loss"] = loss
+            wandb.log(log_map)
+
+    def board_loss_over_data_size(self, data, prefix, board, data_size):
+        """
+        Log the loss to wandb.
+
+        Args:
+            data: PyTorch Geometric Data object containing input data.
+            prefix: Prefix for the loss output.
+            board: Flag to determine if the loss should be logged to wandb.
+            data_size: The size of BAL dataset.
+        """
+        data = self.move_to_device(data)
+        loss = self.get_loss(data)
+        print(f"Data size: {data_size}, {prefix}_loss: {loss}")
+        if board:
+            # data size and trainer losses
+            log_map = {"data size": data_size}
+            if isinstance(loss, tuple):
+                for i in range(len(loss)):
+                    log_map[f"{prefix}_{self.loss_names[i]}"] = loss[i]
+            else:
+                log_map[f"{prefix}_loss"] = loss
+
+            # Additional losses
+            R_sq, MRE, sigma, MSLE = self.get_metrics(data)
+            channel_len = len(R_sq)
+            channel_names = self.dataset_cfg.target_keys
+
+            for cid in range(channel_len):
+                log_map[f"{channel_names[cid]}_RSq"] = R_sq[cid]
+                log_map[f"{channel_names[cid]}_MRE"] = MRE[cid]
+                log_map[f"{channel_names[cid]}_Sigma"] = sigma[cid]
+                log_map[f"{channel_names[cid]}_MSLE"] = MSLE[cid]
+            log_map["mean_RSq"] = np.mean(R_sq)
+            log_map["mean_MRE"] = np.mean(MRE)
+            log_map["mean_Sigma"] = np.mean(sigma)
+            log_map["mean_MSLE"] = np.mean(MSLE)
+
+            wandb.log(log_map)
+
+    def get_test_loss(self, dataloader, has_sumf):
+        """
+        Calculate loss
+
+        Args:
+            dataloader: The data loader to get data.
+            has_sumf: Whether has sumf.
+        """
+        losses = []
+
+        for data in dataloader:
+            data = self.move_to_device(data)
+
+            # For calculate losses
+            loss = self.get_loss(data)
+
+            if has_sumf:
+                losses.append(loss[0])
+            else:
+                losses.append(loss)
+        return sum(losses) / len(losses)
+
+    def board_loss_over_loopers(self, dataloader, prefix, board, data_size, has_sumf):
+        """
+        Log the loss to wandb.
+
+        Args:
+            dataloader: The data loader to get data.
+            prefix: Prefix for the loss output.
+            board: Flag to determine if the loss should be logged to wandb.
+            data_size: The size of BAL dataset.
+            has_sumf: Whether has sumf.
+        """
+        losses = []
+        flux_losses = []
+        sumf_losses = []
+        R_sqs = []
+        MREs = []
+        sigmas = []
+        MSLEs = []
+
+        for data in dataloader:
+            data = self.move_to_device(data)
+
+            # For calculate losses
+            loss = self.get_loss(data)
+
+            if has_sumf:
+                losses.append(loss[0])
+                flux_losses.append(loss[1])
+                sumf_losses.append(loss[2])
+            else:
+                losses.append(loss)
+
+            # For calculate other metrics
+            R_sq, MRE, sigma, MSLE = self.get_metrics(data)
+            R_sqs.append(R_sq)
+            MREs.append(MRE)
+            sigmas.append(sigma)
+            MSLEs.append(MSLE)
+
+        loss_mean = sum(losses) / len(losses)
+        print(f"Data size: {data_size}, {prefix}_loss: {loss_mean}")
+        if has_sumf:
+            flux_loss_mean = sum(flux_losses) / len(flux_losses)
+            sumf_loss_mean = sum(sumf_losses) / len(sumf_losses)
+            print(f"{prefix}_flux_loss: {flux_loss_mean}, {prefix}_sumf_loss: {sumf_loss_mean}")
+
+        R_sq_mean = np.mean(np.array(R_sqs), axis=0)
+        MRE_mean = np.mean(np.array(MREs), axis=0)
+        sigma_mean = np.mean(np.array(sigmas), axis=0)
+        MSLE_mean = np.mean(np.array(MSLEs), axis=0)
+
+        channel_len = len(R_sq_mean)
+        list_elements = []
+        headers = ["Channel", "RSq", "MRE", "Sigma", "MSLE"]
+        channel_names = self.dataset_cfg.target_keys
+
+        for cid in range(channel_len):
+            row = [
+                f"{prefix}, channel:{channel_names[cid]}",
+                R_sq_mean[cid],
+                MRE_mean[cid],
+                sigma_mean[cid],
+                MSLE_mean[cid],
+            ]
+            list_elements.append(row)
+        print(tabulate(list_elements, headers=headers, tablefmt="grid"))
+
+        if board:
+            log_map = {"data size": data_size, f"{prefix}_loss": loss_mean}
+            if has_sumf:
+                log_map[f"{prefix}_flux_loss"] = flux_loss_mean
+                log_map[f"{prefix}_sumf_loss"] = sumf_loss_mean
+
+            channel_names = self.dataset_cfg.target_keys
+            for cid in range(channel_len):
+                log_map[f"{channel_names[cid]}_RSq"] = R_sq_mean[cid]
+                log_map[f"{channel_names[cid]}_MRE"] = MRE_mean[cid]
+                log_map[f"{channel_names[cid]}_Sigma"] = sigma_mean[cid]
+                log_map[f"{channel_names[cid]}_MSLE"] = MSLE_mean[cid]
+            log_map["mean_RSq"] = np.mean(R_sq_mean)
+            log_map["mean_MRE"] = np.mean(MRE_mean)
+            log_map["mean_Sigma"] = np.mean(sigma_mean)
+            log_map["mean_MSLE"] = np.mean(MSLE_mean)
+
+            wandb.log(log_map)
