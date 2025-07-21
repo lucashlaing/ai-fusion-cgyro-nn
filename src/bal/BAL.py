@@ -1,14 +1,20 @@
 import torch
 import json
 import time
+import os
+import h5py
 import numpy as np
+from dataset import Spectra_Regularization_DataPipe
+from torch.utils.data import DataLoader
+from src.utils import InfiniteDataLooper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class BAL():
 
-    def __init__(self, cfg, dataset):
-        self.cfg = cfg
+    def __init__(self, run_cfg, dataset):
+        self.run_cfg = run_cfg
+        self.cfg = run_cfg.bal
         self.dist_json_path = self.cfg.dist_json_path
         self.has_spectra = self.cfg.has_spectra
         self.dataset = dataset
@@ -113,7 +119,88 @@ class BAL():
     def compute_entropy(self, variance):
         return 0.5 * torch.log(2 * torch.pi * torch.exp(torch.tensor(1.0)) * variance)
     
-    def get_entropy(self, candidates, trainer):
+    def get_entropy(self, trainer, data_tuple):
+        """
+        Create new dataset with candidate data, retrain model, and return new predictions.
+
+        Args:
+            trainer: Existing trainer instance
+            data_tuple: (candidates, predictions_per_ky, mean_predictions)
+
+        Returns:
+            torch.Tensor: New predictions from retrained model on candidates
+        """
+
+        # CHECK BACK ON THE CFG TO MAKE SURE WE HAVE ALL THE CORRECT ONES
+
+        candidates, predictions_per_ky, mean_predictions = data_tuple
+        dataset_cfg = self.dataset.cfg
+        input_path = os.path.join(dataset_cfg.dataset_root, "train")
+        temp_h5_path = os.path.join(input_path, "temp_entropy_data.h5")
+
+        try:
+            # Save candidate data to temporary .h5 file in correct key-by-key format
+            with h5py.File(temp_h5_path, 'w') as f:
+                candidates_np = candidates.cpu().numpy()
+                mean_preds_np = mean_predictions.cpu().numpy()
+
+                # Save each input feature separately
+                for i, key in enumerate(dataset_cfg.input_keys):
+                    f.create_dataset(key, data=candidates_np[:, i])
+
+                # Save each target feature separately
+                for i, key in enumerate(dataset_cfg.target_keys):
+                    f.create_dataset(key, data=mean_preds_np[:, i])
+
+                # Save intermediate target if applicable (e.g., sumf as spectra)
+                if self.has_spectra and predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
+                    preds_per_ky_np = predictions_per_ky.cpu().numpy()
+                    # Assuming the first intermediate key is "sumf"
+                    f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=preds_per_ky_np)
+
+        except OSError as e:
+            raise RuntimeError(f"Failed to write file: {e}")
+
+        # Load the updated dataset with new HDF5 file included
+        new_dataset = Spectra_Regularization_DataPipe(
+            dataset_cfg,
+            self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
+            self.cfg.base_seed if hasattr(self.cfg, 'base_seed') else 42,
+            split="train"
+        )
+
+        # Clone model and trainer from existing
+        model_class = type(trainer.model)
+        new_model = model_class(trainer.cfg.model)
+        trainer_class = type(trainer)
+        new_trainer = trainer_class(new_model, trainer.cfg, trainer.tc_rng)
+
+        # Prepare data loader and looper
+        train_loader = DataLoader(
+            new_dataset,
+            batch_size=trainer.cfg.batch,
+            num_workers=self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
+            pin_memory=True
+        )
+        train_looper = InfiniteDataLooper(train_loader)
+
+        # Accumulate channel statistics
+        accumulation_steps = getattr(trainer.cfg.opt, 'accumulation_steps', 100)
+        for _ in range(accumulation_steps):
+            data = next(train_looper)
+            new_trainer.accumulate(data)
+
+        # Train for a short time for entropy estimation
+        training_steps = getattr(self.cfg, 'entropy_training_steps', 1000)
+        for step in range(training_steps):
+            data = next(train_looper)
+            new_trainer.iter(data)
+            if step % 100 == 0:
+                print(f"Entropy training step: {step}/{training_steps}")
+
+        # Predict on the original candidate inputs
+        new_predictions, _ = self.get_prediction(candidates, new_trainer)
+        return new_predictions
 
 
     def eig(self, candidates, trainer):
@@ -121,7 +208,7 @@ class BAL():
         # 1. calcuate prior entropy
         start_time = time.time()
         # Get the predictions and calculate variance
-        all_predictions, all_predictions_per_ky = self.get_prediction(candidates)
+        all_predictions, all_predictions_per_ky = self.get_prediction(candidates, trainer)
         all_predictions = all_predictions.cpu()
         var_predictions = torch.var(all_predictions, dim=0)
         var_predictions = torch.mean(var_predictions, dim=1)
@@ -149,4 +236,56 @@ class BAL():
         end_time = time.time()
         print("Time to posterior compute_entropy: " + str(end_time - start_time))
 
-        # 4. calcualte eig and get top samples
+        # 4. calcualte eig and sort them
+        eig = prior - posterior
+
+        sorted_eig_values, sorted_indices = torch.sort(eig, descending=True)
+
+        return sorted_eig_values, sorted_indices
+
+    def model_difference(self, candidates, trainer):
+        """
+        Sort candidates by the average predicted flux magnitude across 4 outputs.
+
+        Args:
+            candidates (Tensor): Input candidate tensor
+            trainer: Trainer object that contains the model
+
+        Returns:
+            sorted_scores: Sorted values from largest to smallest
+            sorted_indices: Indices of the candidates sorted by descending difference
+        """
+        all_predictions, all_predictions_per_ky = self.get_prediction(candidates, trainer)
+
+        if self.has_spectra:
+            # shape: (model_count, n_samples, 4)
+            mean_predictions = torch.mean(all_predictions_per_ky, dim=0)  # (n_samples, 4)
+            mean_flux = torch.mean(mean_predictions, dim=1)  # (n_samples,)
+        else:
+            # shape: (model_count, n_samples)
+            mean_flux = torch.mean(all_predictions, dim=0)  # (n_samples,)
+
+        sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
+        return sorted_scores, sorted_indices
+
+
+    def propose_samples(self, trainer):
+        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+
+        # Each returns (scores, indices) where indices are into `candidates`
+        model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
+        eig_scores, eig_indices = self.eig(candidates, trainer)
+
+        # Make sure both scores are aligned with the *original* candidates
+        # Initialize full score tensors
+        combined_scores = torch.zeros(len(candidates))
+
+        # Place each set of scores in the correct positions
+        combined_scores[model_diff_indices] += model_diff_scores
+        combined_scores[eig_indices] += eig_scores
+
+        # Select top-K based on combined score
+        topk_scores, topk_indices = torch.topk(combined_scores, self.cfg.new_sample_size)
+        topk_candidates = candidates[topk_indices]
+
+        return topk_candidates
