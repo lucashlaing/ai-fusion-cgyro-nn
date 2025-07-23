@@ -71,13 +71,13 @@ class BAL():
 
         return x_samples # Shape: (n_samples, n_features)
 
-    def get_prediction(self, input, trainer):
+    def get_prediction(self, input, model):
             """
-            Get a list of predictions according to trainer
+            Get a list of predictions according to model
 
             Args:
                 input: input data
-                trainer: trainer with our current model
+                model: our current model
 
             Return:
                 predictions_per_ky: The prediction per ky.
@@ -91,7 +91,6 @@ class BAL():
             input_chunks = torch.split(input, chunk_size, dim=0)
 
             with torch.no_grad():
-                model = trainer.model
                 model = model.train() # to keep Dropout on (can turn off all except dropout layer later if needed)
 
                 for _ in range(self.cfg.model_count):
@@ -199,7 +198,7 @@ class BAL():
                 print(f"Entropy training step: {step}/{training_steps}")
 
         # Predict on the original candidate inputs
-        new_predictions, _ = self.get_prediction(candidates, new_trainer)
+        new_predictions, _ = self.get_prediction(candidates, new_trainer.model)
         return new_predictions
 
 
@@ -208,7 +207,7 @@ class BAL():
         # 1. calcuate prior entropy
         start_time = time.time()
         # Get the predictions and calculate variance
-        all_predictions, all_predictions_per_ky = self.get_prediction(candidates, trainer)
+        all_predictions, all_predictions_per_ky = self.get_prediction(candidates, trainer.model)
         all_predictions = all_predictions.cpu()
         var_predictions = torch.var(all_predictions, dim=0)
         var_predictions = torch.mean(var_predictions, dim=1)
@@ -255,15 +254,14 @@ class BAL():
             sorted_scores: Sorted values from largest to smallest
             sorted_indices: Indices of the candidates sorted by descending difference
         """
-        all_predictions, all_predictions_per_ky = self.get_prediction(candidates, trainer)
+        all_predictions, _ = self.get_prediction(candidates, trainer.model)
+        # run candidates through lower model as well (NOT TOO OPTIMIZED)
+        lower_model_pred = self.get_prediction(candidates, trainer.model.lowerModel)
 
-        if self.has_spectra:
-            # shape: (model_count, n_samples, 4)
-            mean_predictions = torch.mean(all_predictions_per_ky, dim=0)  # (n_samples, 4)
-            mean_flux = torch.mean(mean_predictions, dim=1)  # (n_samples,)
-        else:
-            # shape: (model_count, n_samples)
-            mean_flux = torch.mean(all_predictions, dim=0)  # (n_samples,)
+        # makes our predictions to be for the difference
+        all_predictions = all_predictions - lower_model_pred
+        # shape: (model_count, n_samples) or (model_count, n_samples, 1)
+        mean_flux = torch.mean(all_predictions, dim=0)  # (n_samples,)
 
         sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
         return sorted_scores, sorted_indices

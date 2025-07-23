@@ -2,6 +2,7 @@ epoch_per_training: 1000
 acquisition_function: eig
 n_samples: 400000
 new_sample_size: 10000
+entropy_training_steps: 100
 training_cycles: 100
 dataset_status: offline
 model_count: 16
