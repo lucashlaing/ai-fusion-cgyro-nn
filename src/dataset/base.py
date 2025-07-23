@@ -3,7 +3,7 @@ import glob
 import numpy as np
 import torch
 from torch.utils.data import IterableDataset
-
+print(os.listdir("./src/tglf_sumf_data_full_madcut_filter/train"))
 
 class BaseDataPipe(IterableDataset):
     """
@@ -47,6 +47,9 @@ class BaseDataPipe(IterableDataset):
         Returns:
             list: List of file paths.
         """
+        print("getting file list:")
+        print(self.data_dir)
+        print(glob.glob(os.path.join(self.data_dir, "*.h5")))
         return glob.glob(os.path.join(self.data_dir, "*.h5"))
 
     def _read_path(self, file_path):

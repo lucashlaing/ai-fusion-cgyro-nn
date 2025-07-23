@@ -7,8 +7,8 @@ defaults:
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none
 
-project: SR
-board: True
+project: CGYRO
+board: False
 plot: True
 experiment: "SR"
 dump_dir: "./latest_res"

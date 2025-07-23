@@ -1,5 +1,5 @@
 import torch
-from src.utils import Normalizer
+from utils import Normalizer
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -23,12 +23,12 @@ class Base(torch.nn.Module):
             cfg (OmegaConf): Configuration object containing model parameters.
         """
         super(Base, self).__init__()
-        maxacum = 5e5
-        input_dim = cfg.input_dim
-        target_dim = cfg.target_dim
+        self.maxacum = 5e5
+        self.input_dim = cfg.input_dim
+        self.target_dim = cfg.target_dim
         self._recover_pred_unit = cfg.recover_pred_unit
-        self._inputNormalizer = Normalizer(input_dim, max_accumulations=maxacum, device=device, name="in_norm")
-        self._targetNormalizer = Normalizer(target_dim, max_accumulations=maxacum, device=device, name="out_norm")
+        self._inputNormalizer = Normalizer(self.input_dim, max_accumulations=self.maxacum, device=device, name="in_norm")
+        self._targetNormalizer = Normalizer(self.target_dim, max_accumulations=self.maxacum, device=device, name="out_norm")
 
     # =====================================================================
     # Methods that need to be implemented in child classes

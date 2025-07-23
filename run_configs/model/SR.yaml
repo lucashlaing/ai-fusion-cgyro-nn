@@ -1,13 +1,14 @@
-latent_dim: 256
-hidden_layer: 4
+latent_dim: 1024
+hidden_layer: 2
 input_dim: 32
 target_dim: 4
-num_resnet: 4
+num_resnet: 8
 
 ky: 24
 
 apply_asinh_accumulate: False
 normalize_mse_loss: False
+recover_pred_unit: false
 
 w_target: 1.0
 w_spectra: 1.0
