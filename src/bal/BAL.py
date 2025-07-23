@@ -6,7 +6,7 @@ import h5py
 import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
-from src.utils import InfiniteDataLooper
+from utils import InfiniteDataLooper
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 

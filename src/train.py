@@ -6,6 +6,7 @@ import pytz
 from datetime import datetime
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
+from bal import BAL_HANDLER
 from trainer import TRAINER_HANDLER
 from dataset import DATSET_HANDLER
 from model import MODEL_HANDLER
@@ -153,6 +154,12 @@ def run_train(cfg):
         if trainer.train_step > 0 and (trainer.train_step % cfg.time_freq == 0):
             ratio = (trainer.train_step - cfg.time_warm) / total_steps
             timer.estimate_time("time estimate", ratio)
+
+    # training model is done
+    # BAL start
+
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe)
+    new_samples = bal.propose_samples(trainer)
 
     if cfg.board:
         wandb.finish()
