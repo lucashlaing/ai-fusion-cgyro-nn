@@ -1,5 +1,12 @@
 project_name: ai-fusion-cgyro-nn
 model:
+  empty-test:
+    command: >-
+      []() echo "Testing"
+    gpu_count: 1
+    memory: 30
+    cpu_count: 4
+    ephemeral_storage: 200
   bal-train-test:
     command: >-
       [](git submodule add https://github.com/Rose-STL-Lab/Zihao-s-Toolbox.git src/toolbox; make download file=tglf_sumf_data_major_perturb/;) python src/train.py; s5cmd cp "<dump-dir>/*" s3://testlawrence/cgyro-nn-results/
@@ -20,5 +27,4 @@ dataset:
       _normalize_mse_loss: [False]
       _random_loss: [False]
 run:
-  dataset: [initial-dataset]
-  model: [train-large-filtered-hyperparams]
+  model: [empty-test]
