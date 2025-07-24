@@ -1,4 +1,4 @@
-name: ai-train-template
+name: example
 channels:
   - conda-forge
   - nvidia

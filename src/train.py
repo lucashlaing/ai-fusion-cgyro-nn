@@ -160,7 +160,7 @@ def run_train(cfg):
 
     bal = BAL_HANDLER[project_name](cfg, train_datapipe)
     new_samples = bal.propose_samples(trainer)
-
+    
     if cfg.board:
         wandb.finish()
 
