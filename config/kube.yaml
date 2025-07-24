@@ -2,6 +2,12 @@ project_name: ai-fusion-cgyro-nn
 namespace: ai-fusion-ga
 user: zclawrence
 
+hostname_blacklist:
+ - ucm-fiona01.ucmerced.edu
+ - fiona8.ucsc.edu
+ - k8s-chase-ci-05.calit2.optiputer.net
+ - k8s-chase-ci-04.calit2.optiputer.net
+
 hostname_whitelist:
   - gpu-02.csusb.edu
   - nautilus01.hsrn.nyu.edu
