@@ -1,8 +1,8 @@
 project_name: ai-fusion-cgyro-nn
 model:
-  bal-train:
+  bal-train-test:
     command: >-
-      [](git submodule add https://github.com/Rose-STL-Lab/Zihao-s-Toolbox.git src/toolbox; make download file=tglf_sumf_data_major_perturb/;) python src/train.py -cn <cn> dataset=SR_small dump_dir=<dump-dir> model.latent_dim=256 model.hidden_layer=4 model.num_resnet=4 project=<project> board=True full_eval=True plot=False dataset.dataset_root="./tglf_sumf_data_major_perturb/" batch=480 steps_per_epoch=1000 loss_freq=1000 save_freq=10000 plot_freq=10000 time_freq=1000 time_warm=100 accumulation_steps=1000 opt.warmup_steps=20000 opt.decay_steps=200000 model.apply_asinh_accumulate=<asinh_accumulate> model.normalize_mse_loss=<normalize_mse_loss> opt.random_loss=<random_loss>; s5cmd cp "<dump-dir>/*" s3://ai-fusion-ga/results/<dump-dir>/major_perturb/
+      [](git submodule add https://github.com/Rose-STL-Lab/Zihao-s-Toolbox.git src/toolbox; make download file=tglf_sumf_data_major_perturb/;) python src/train.py; s5cmd cp "<dump-dir>/*" s3://testlawrence/cgyro-nn-results/
     gpu_count: 1
     memory: 30
     cpu_count: 4
@@ -13,7 +13,7 @@ dataset:
       # Launch will automatically consider all combinations of hparam
       # hparam preceded by _ will NOT appear in the job name
       # If your hparam contain special characters, you must _ them
-      _dump-dir: ["./fixed-getpred-runs-asinhaccu"]
+      _dump-dir: ["./initial-training-run"]
       _project: ["SR"]
       _cn: [SR]
       _asinh_accumulate: [True]
@@ -21,4 +21,4 @@ dataset:
       _random_loss: [False]
 run:
   dataset: [initial-dataset]
-  model: [bal-train]
+  model: [train-large-filtered-hyperparams]
