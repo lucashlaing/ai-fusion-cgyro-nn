@@ -60,8 +60,8 @@ def infer_perturbations(inputs):
 
     return pred
 
-def expand_predictions(pred):
-    predictions_expanded = np.zeros(shape=(1000, 31, 4, 2))
+def expand_predictions(pred, N):
+    predictions_expanded = np.zeros(shape=(N, 31, 4, 2))
     for j in range((int)(pred.shape[0] / 62)):
         i = j * 62
         left = pred[i:i+31, :]
@@ -75,9 +75,9 @@ def trace(J):
     sq = J_T @ J
     return np.trace(sq)
 
-def compute_jacobians(samples):
+def compute_jacobians(samples, N):
     pred = infer_perturbations(samples)
-    predictions_expanded = expand_predictions(pred)
+    predictions_expanded = expand_predictions(pred, N)
     jacobians = np.zeros(shape=(predictions_expanded.shape[0], 31, 4))
     for i in range(predictions_expanded.shape[0]):
         # Compute jacobian for input i
@@ -105,17 +105,16 @@ if __name__ == "__main__":
     parser.add_argument("-K", "--num_candidates")
 
     args = parser.parse_args()
-    N = args.num_samples
-    K = args.num_candidates
+    N = int(args.num_samples)
+    K = int(args.num_candidates)
 
     print(f"Generating dataset from {N} samples, taking top {K} candidates")
     samples = sample_and_perturb(N)
-    traces = compute_jacobians(samples)
+    traces = compute_jacobians(samples, N)
     sorted_idxs = np.argsort(-traces) #argsort is always ascending, so taking -traces is a simple way to get the descending sorted idxs
     topK = sorted_idxs[:K]
     samples_topK = samples[topK]
 
-    with open("./samples_topk.pkl", "wb") as file:
+    with open(f"./samples_top{K}.pkl", "wb") as file:
         # Dump the object to the file
         pickle.dump(samples_topK, file)
-

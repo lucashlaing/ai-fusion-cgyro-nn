@@ -87,6 +87,7 @@ model:
   normalize_mse_loss: false
   w_target: 1.0
   w_spectra: 1.0
+  recover_pred_unit: false
 opt:
   peak_lr: 0.0001
   end_lr: 1.0e-07
