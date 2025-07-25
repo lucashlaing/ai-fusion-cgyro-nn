@@ -40,7 +40,6 @@ def run_train(cfg):
         wandb.init(
             project=f"{cfg.project}-train-fixed-op",
             config=OmegaConf.to_container(cfg, resolve=True),
-            entity="mhlaing-university-of-california-san-diego",
         )
         with open_dict(cfg):
             cfg.run_id = wandb.run.id

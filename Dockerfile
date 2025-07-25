@@ -34,4 +34,5 @@ RUN poetry install --no-root
 #Pip install as the poetry install is broken due to their dependency issues
 RUN pip install pyrokinetics
 
+ENV WANDB_API_KEY=f143329a989e1852871928c4c018b121d35334a3
 # Pushing again.....
