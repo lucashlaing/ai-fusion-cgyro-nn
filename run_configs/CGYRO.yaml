@@ -8,7 +8,7 @@ defaults:
   - override hydra/job_logging: none
 
 project: CGYRO
-board: False
+board: True
 plot: True
 experiment: "SR"
 dump_dir: "./latest_res"
@@ -18,7 +18,7 @@ batch: 256
 restore_dir: "./SR-res"
 restore_step: 100
 epochs: 20
-steps_per_epoch: 87
+steps_per_epoch: 80
 loss_freq: 100
 save_freq: 1000
 plot_freq: 3500

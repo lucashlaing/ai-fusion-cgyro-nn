@@ -21,16 +21,23 @@ class BAL():
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
-        Generate bounded normal samples based on mean/std/min/max from a distribution JSON.
+        Sample candidate inputs using bounded normal sampling.
 
-        Args:
-            n_samples (int): Number of samples to draw.
-            dist_json_path (str): Path to distribution JSON with mean, std, min, max.
-            buffer_ratio (float): Extra buffer to apply beyond min/max.
-
-        Returns:
-            torch.Tensor: Sampled tensor of shape (n_samples, n_features)
+        If self.has_spectra is True:
+            Return shape (n_samples, 24, 32) with 31 base features + 1 k_y.
+        Else:
+            Return shape (n_samples, 31).
         """
+        import json
+
+        # HARD CODED KY VALUES
+        KY_LOCS = [
+            0.06010753, 0.12021505, 0.18032258, 0.2404301, 0.30053763, 0.54096774,
+            0.66118279, 0.78139784, 0.90161289, 1.02182795, 1.142043, 1.26225805,
+            1.20215052, 1.5988144, 2.12677655, 2.82962789, 3.76547314, 5.01177679,
+            6.67183152, 8.88339377, 11.8302146, 15.75743919, 20.99217655, 27.97098031
+        ]
+
         with open(dist_json_path, 'r') as f:
             dist = json.load(f)
 
@@ -40,7 +47,6 @@ class BAL():
         min_bounds = torch.tensor([dist[var]["min"] for var in var_names])
         max_bounds = torch.tensor([dist[var]["max"] for var in var_names])
 
-        # Add buffer
         range_bounds = max_bounds - min_bounds
         min_bounds -= buffer_ratio * range_bounds
         max_bounds += buffer_ratio * range_bounds
@@ -59,17 +65,18 @@ class BAL():
         if len(samples) < n_samples:
             raise RuntimeError(f"Only sampled {len(samples)} after {attempts} attempts.")
 
-        x_samples = torch.stack(samples)
+        x_samples = torch.stack(samples)  # shape: (n_samples, 31)
 
-        if(self.has_spectra):
-            input_data_expanded = np.repeat(x_samples[:, np.newaxis, :], self.spectra_mean.shape[0], axis=1)
-            spectra_function_data_expanded = np.repeat(
-                self.spectra_mean[:, np.newaxis].unsqueeze(0), len(x_samples), axis=0
-            )
-            x_samples = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2)
-            x_samples = torch.tensor(x_samples)
+        if self.has_spectra:
+            # Add 24 k_y values as the 32nd feature
+            ky_tensor = torch.tensor(KY_LOCS, dtype=torch.float32)  # (24,)
+            ky_expanded = ky_tensor.unsqueeze(0).repeat(n_samples, 1)  # (n_samples, 24)
+            x_expanded = x_samples.unsqueeze(1).repeat(1, 24, 1)  # (n_samples, 24, 31)
+            final_input = torch.cat([x_expanded, ky_expanded.unsqueeze(-1)], dim=-1)  # (n_samples, 24, 32)
+            return final_input
+        else:
+            return x_samples  # (n_samples, 31)
 
-        return x_samples # Shape: (n_samples, n_features)
 
     def get_prediction(self, input, model):
             """
@@ -269,11 +276,13 @@ class BAL():
 
     def propose_samples(self, trainer):
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        print("Candidates found")
 
         # Each returns (scores, indices) where indices are into `candidates`
         model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
+        print("model difference Done")
         eig_scores, eig_indices = self.eig(candidates, trainer)
-
+        print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
         # Initialize full score tensors
         combined_scores = torch.zeros(len(candidates))
@@ -285,5 +294,5 @@ class BAL():
         # Select top-K based on combined score
         topk_scores, topk_indices = torch.topk(combined_scores, self.cfg.new_sample_size)
         topk_candidates = candidates[topk_indices]
-
+        print("Top k candidates found")
         return topk_candidates
