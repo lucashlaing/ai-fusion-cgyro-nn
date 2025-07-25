@@ -31,5 +31,5 @@ RUN conda clean -qafy
 # Activate the new conda environment and install poetry
 SHELL ["/opt/conda/bin/conda", "run", "-n", "PROJECT_NAME", "/bin/bash", "-c"]
 RUN poetry install --no-root
-
-# re-running Docker push GH action (again)
+#Pip install as the poetry install is broken due to their dependency issues
+RUN pip install pyrokinetics
