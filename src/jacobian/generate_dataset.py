@@ -6,6 +6,7 @@ import pickle
 import matplotlib.pyplot as plt
 from inference import run_inference, load_config_and_checkpoint
 import torch
+import argparse
 
 AVG_KY_LOCS = torch.tensor([0.06010753, 0.12021505, 0.18032258, 0.2404301, 0.30053763, 0.54096774,
   0.66118279, 0.78139784, 0.90161289, 1.02182795, 1.142043, 1.26225805,
@@ -39,6 +40,7 @@ def sample_and_perturb(N):
         for j in range(31):
             for k in range(2):
                 samples_all[(i * 31 * 2) + (j * 2) + k, :] = sample[j, :, k].squeeze()
+    print(f'Completed sampling of {N} inputs!')
     return samples_all
 
 def infer_perturbations(inputs):
@@ -95,14 +97,18 @@ def compute_jacobians(samples):
     with open("./traces.pkl", "wb") as file:
         # Dump the object to the file
         pickle.dump(traces, file)
-    
     return traces
 
-
-
 if __name__ == "__main__":
-    N = 100000
-    K = 10000
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-N", "--num_samples")
+    parser.add_argument("-K", "--num_candidates")
+
+    args = parser.parse_args()
+    N = args.num_samples
+    K = args.num_candidates
+
+    print(f"Generating dataset from {N} samples, taking top {K} candidates")
     samples = sample_and_perturb(N)
     traces = compute_jacobians(samples)
     sorted_idxs = np.argsort(-traces) #argsort is always ascending, so taking -traces is a simple way to get the descending sorted idxs

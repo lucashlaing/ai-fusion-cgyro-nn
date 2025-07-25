@@ -1,10 +1,17 @@
 project_name: ai-fusion-cgyro-nn
 model:
+  generate-initial-dataset-via-jacobian:
+    command: >-
+      [](make download file=ersp_res/700000_params.pth; cp ersp_res/700000_params.pth src/jacobian/;) pip install pyrokinetics; cd src/jacobian; python generate_dataset.py; cd ../../; cp src/jacobian/samples_topk.pkl ersp_res/; make upload file=ersp_res/samples_topk.pkl;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 200
   bal-from-scratch: # download TGLF-SINN checkpoint
     command: >-
       [](make download file=tglf_sumf_data_full_madcut_filter/train_filtered/tglfnn_DB_sat2_em_azf-1_RLNS_12_+1_azf-1_processed.h5;) python train.py; make upload file=;
     gpu_count: 2
-    memory: 30
+    memory: 64
     cpu_count: 4
     ephemeral_storage: 200
   bal-from-checkpoint: # download TGLF-SINN checkpoint AND last CGYRO-NN checkpoint
@@ -27,4 +34,4 @@ dataset:
       _normalize_mse_loss: [False]
       _random_loss: [False]
 run:
-  model: [bal-from-scratch]
+  model: [generate-initial-dataset-via-jacobian]
