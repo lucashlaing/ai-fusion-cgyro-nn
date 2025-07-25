@@ -1,0 +1,122 @@
+bal:
+  kappa: 1.96
+  epoch_per_training: 5000
+  acquisition_function: eig
+  n_samples: 200000
+  new_sample_size: 10000
+  training_cycles: 100
+  learning_rate: 0.001
+  dataset_status: offline
+  noise_period: 0.05
+  std_noise: 0.001
+  model_count: 16
+  variance_model: drop_out
+  additional_training_epochs: 50
+  with_rho: true
+  pool_based: true
+dataset:
+  dataset_root: ./tglf_sumf_data_major_minor_perturb_shuffled_madcut_filter/
+  input_keys:
+  - RLTS_3
+  - KAPPA_LOC
+  - ZETA_LOC
+  - TAUS_3
+  - VPAR_1
+  - Q_LOC
+  - RLNS_1
+  - TAUS_2
+  - Q_PRIME_LOC
+  - P_PRIME_LOC
+  - ZMAJ_LOC
+  - VPAR_SHEAR_1
+  - RLTS_2
+  - S_DELTA_LOC
+  - RLTS_1
+  - RMIN_LOC
+  - DRMAJDX_LOC
+  - AS_3
+  - RLNS_3
+  - DZMAJDX_LOC
+  - DELTA_LOC
+  - S_KAPPA_LOC
+  - ZEFF
+  - VEXB_SHEAR
+  - RMAJ_LOC
+  - AS_2
+  - RLNS_2
+  - S_ZETA_LOC
+  - BETAE_log10
+  - XNUE_log10
+  - DEBYE_log10
+  target_keys:
+  - OUT_G_elec
+  - OUT_Q_elec
+  - OUT_Q_ions
+  - OUT_P_ions
+  target_log10_max:
+  - 1.9472523194990843
+  - 2.9125993088915183
+  - 2.995133053014522
+  - 2.533276237580266
+  target_log10_min:
+  - -9.0
+  - -9.0
+  - -9.0
+  - -9.0
+  log_ops_keys:
+  - BETAE_log10
+  - XNUE_log10
+  - DEBYE_log10
+  spectra_function_keys:
+  - ky
+  intermediate_target_keys:
+  - sumf
+  config_keys:
+  - NMODES
+  - NS
+  - USE_BPER
+  - USE_BPAR
+model:
+  latent_dim: 256
+  hidden_layer: 4
+  input_dim: 32
+  target_dim: 4
+  num_resnet: 4
+  ky: 24
+  apply_asinh_accumulate: true
+  normalize_mse_loss: false
+  w_target: 1.0
+  w_spectra: 1.0
+opt:
+  peak_lr: 0.0001
+  end_lr: 1.0e-07
+  warmup_steps: 70000
+  decay_steps: 700000
+  gnorm_clip: 1.0
+  weight_decay: 0.0001
+  gradient_accumulation_steps: 1
+  random_loss: false
+project: SR
+board: true
+plot: false
+experiment: SR
+dump_dir: ./offline-runs-ablations
+base_seed: 42
+dataset_workers: 8
+batch: 1024
+restore_dir: ./SR-res
+restore_step: 1000000
+epochs: 200
+steps_per_epoch: 3500
+loss_freq: 3500
+save_freq: 35000
+plot_freq: 35000
+time_freq: 3500
+time_warm: 350
+accumulation_steps: 3500
+time_stamp: ''
+resume_index: 0
+full_eval: true
+run_id: 6z44itnw
+entity: f6zhang-university-of-california-san-diego
+full_project_name: SR-offline-ablations

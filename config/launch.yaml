@@ -3,14 +3,14 @@ model:
   bal-from-scratch: # download TGLF-SINN checkpoint
     command: >-
       [](make download file=tglf_sumf_data_full_madcut_filter/train_filtered/tglfnn_DB_sat2_em_azf-1_RLNS_12_+1_azf-1_processed.h5;) python train.py; make upload file=;
-    gpu_count: 1
+    gpu_count: 2
     memory: 30
     cpu_count: 4
     ephemeral_storage: 200
   bal-from-checkpoint: # download TGLF-SINN checkpoint AND last CGYRO-NN checkpoint
     command: >-
       [](make download file=tglf_sumf_data_full_madcut_filter/train_filtered/tglfnn_DB_sat2_em_azf-1_RLNS_12_+1_azf-1_processed.h5;) python train.py; make upload file=;
-    gpu_count: 1
+    gpu_count: 2
     memory: 30
     cpu_count: 4
     ephemeral_storage: 200
