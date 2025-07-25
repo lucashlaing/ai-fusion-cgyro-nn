@@ -37,8 +37,8 @@ def run_train(cfg):
     print(OmegaConf.to_yaml(cfg))
 
     if cfg.board:
+        wandb.login('f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
         wandb.init(
-            wandb.login('f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
             project=f"{cfg.project}-train-fixed-op",
             config=OmegaConf.to_container(cfg, resolve=True),
         )
