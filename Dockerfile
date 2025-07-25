@@ -31,7 +31,6 @@ RUN conda clean -qafy
 # Activate the new conda environment and install poetry
 SHELL ["/opt/conda/bin/conda", "run", "-n", "PROJECT_NAME", "/bin/bash", "-c"]
 RUN poetry install --no-root
-ENV WANDB_API_KEY=f143329a989e1852871928c4c018b121d35334a3
 #Pip install as the poetry install is broken due to their dependency issues
 RUN pip install pyrokinetics
 
