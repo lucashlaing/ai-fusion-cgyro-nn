@@ -33,3 +33,5 @@ SHELL ["/opt/conda/bin/conda", "run", "-n", "PROJECT_NAME", "/bin/bash", "-c"]
 RUN poetry install --no-root
 #Pip install as the poetry install is broken due to their dependency issues
 RUN pip install pyrokinetics
+
+# Pushing again...
