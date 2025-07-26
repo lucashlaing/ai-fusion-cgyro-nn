@@ -263,7 +263,7 @@ class BAL():
         """
         all_predictions, _ = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, trainer.model.lowerModel)
+        lower_model_pred, _ = self.get_prediction(candidates, trainer.model.lowerModel)
 
         # makes our predictions to be for the difference
         all_predictions = all_predictions - lower_model_pred
