@@ -7,7 +7,7 @@ defaults:
   - override hydra/job_logging: none
 
 project: TGLF_NN
-board: False
+board: True
 plot: True
 dump_dir: "./TGLF_NN_test_dump1"
 plot_dir: "./TGLF_NN_test_dump1/eval"
