@@ -51,7 +51,7 @@ def run_train(cfg):
     project_name = cfg.project
     if(project_name == "CGYRO"):
         lowerModel = MODEL_HANDLER["SR"](cfg.model)
-        checkpoint_path = cfg.model.checkpoint_path
+        checkpoint_path = cfg.checkpoint_path
         load_prev_model(lowerModel, checkpoint_path)
         print("Lower Fidelity Model Loaded Successful")
         model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
