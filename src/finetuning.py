@@ -15,6 +15,7 @@ from utils import (
     timer,
     InfiniteDataLooper,
     load_prev_model,
+    upload_to_s3,
 )
 from tqdm import tqdm
 
@@ -163,6 +164,8 @@ def run_train(cfg):
     # SAVING THE MODEL WEIGHTS HERE 
     print("final model weights saved at ", ckpt_dir)
     trainer.save(ckpt_dir)
+    upload_to_s3(f"ersp_res/checkpoints/{project_name}_{time_stamp}", ckpt_dir)
+
     if cfg.board:
         wandb.finish()
 
