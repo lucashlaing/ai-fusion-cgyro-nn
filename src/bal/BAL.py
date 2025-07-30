@@ -137,8 +137,6 @@ class BAL():
             torch.Tensor: New predictions from retrained model on candidates
         """
 
-        # CHECK BACK ON THE CFG TO MAKE SURE WE HAVE ALL THE CORRECT ONES
-
         candidates, predictions_per_ky, mean_predictions = data_tuple
         dataset_cfg = self.dataset.cfg
         input_path = os.path.join(dataset_cfg.dataset_root, "train")
@@ -147,22 +145,90 @@ class BAL():
         try:
             # Save candidate data to temporary .h5 file in correct key-by-key format
             with h5py.File(temp_h5_path, 'w') as f:
-                candidates_np = candidates.cpu().numpy()
-                mean_preds_np = mean_predictions.cpu().numpy()
-
-                # Save each input feature separately
-                for i, key in enumerate(dataset_cfg.input_keys):
-                    f.create_dataset(key, data=candidates_np[:, i])
-
-                # Save each target feature separately
-                for i, key in enumerate(dataset_cfg.target_keys):
-                    f.create_dataset(key, data=mean_preds_np[:, i])
-
-                # Save intermediate target if applicable (e.g., sumf as spectra)
-                if self.has_spectra and predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
-                    preds_per_ky_np = predictions_per_ky.cpu().numpy()
-                    # Assuming the first intermediate key is "sumf"
-                    f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=preds_per_ky_np)
+                if self.has_spectra:
+                    # candidates shape: (n_samples, 24, 32)
+                    # Extract input features (first 31 features) and ky values (last feature)
+                    candidates_np = candidates.cpu().numpy()
+                    n_samples = candidates_np.shape[0]
+                    
+                    # Input features are the same across all ky values for each sample
+                    # Take the first ky slice since input features are repeated
+                    input_features = candidates_np[:, 0, :-1]  # (n_samples, 31)
+                    ky_values = candidates_np[:, :, -1]  # (n_samples, 24)
+                    
+                    # Save each input feature separately
+                    for i, key in enumerate(dataset_cfg.input_keys):
+                        f.create_dataset(key, data=input_features[:, i])
+                    
+                    # Save ky values (spectra function)
+                    for i, key in enumerate(dataset_cfg.spectra_function_keys):
+                        if key == "ky":
+                            f.create_dataset(key, data=ky_values)
+                    
+                    # Save target features (mean predictions)
+                    mean_preds_np = mean_predictions.cpu().numpy()
+                    for i, key in enumerate(dataset_cfg.target_keys):
+                        f.create_dataset(key, data=mean_preds_np[:, i])
+                    
+                    # Save intermediate target (predictions per ky)
+                    if predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
+                        preds_per_ky_np = predictions_per_ky.cpu().numpy()
+                        
+                        # Take mean across models if needed
+                        if len(preds_per_ky_np.shape) == 4:  # (model_count, n_samples, 24, 4)
+                            mean_preds_per_ky = np.mean(preds_per_ky_np, axis=0)  # (n_samples, 24, 4)
+                        else:
+                            mean_preds_per_ky = preds_per_ky_np
+                        
+                        # Based on reference file analysis:
+                        # Original sumf shape: (size, nky, 1, nf, ns, 5)
+                        # Reference has nf=2, ns=3
+                        ns = 3  # number of species (electrons + 2 ions)
+                        nf = 2  # number of fields 
+                        
+                        # Create sumf tensor in the original H5 format
+                        sumf_reconstructed = np.zeros((n_samples, 24, 1, nf, ns, 5))
+                        
+                        # Fill in the data based on how _read_path processes it:
+                        # After squeeze: (size, nky, nf, ns, 5)
+                        # After sum over nf: (size, nky, ns, 5)
+                        # Then extracts:
+                        # G_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 0]
+                        # Q_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 1]
+                        # Q_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 1])
+                        # P_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 2])
+                        
+                        # Distribute values across both fields (nf=2) so they sum correctly
+                        # Electrons (species 0)
+                        sumf_reconstructed[:, :, 0, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                        sumf_reconstructed[:, :, 0, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                        sumf_reconstructed[:, :, 0, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                        sumf_reconstructed[:, :, 0, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                        
+                        # Ions (species 1 and 2) - distribute Q_ions and P_ions equally
+                        n_ion_species = ns - 1  # 2 ion species
+                        q_ions_per_species_per_field = mean_preds_per_ky[:, :, 2] / (n_ion_species * nf)
+                        p_ions_per_species_per_field = mean_preds_per_ky[:, :, 3] / (n_ion_species * nf)
+                        
+                        for field_idx in range(nf):
+                            for ion_idx in range(1, ns):  # species 1 and 2 are ions
+                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 1] = q_ions_per_species_per_field
+                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 2] = p_ions_per_species_per_field
+                        
+                        f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
+                
+                else:
+                    # No spectra case
+                    candidates_np = candidates.cpu().numpy()  # (n_samples, 31)
+                    mean_preds_np = mean_predictions.cpu().numpy()
+                    
+                    # Save each input feature separately
+                    for i, key in enumerate(dataset_cfg.input_keys):
+                        f.create_dataset(key, data=candidates_np[:, i])
+                    
+                    # Save each target feature separately
+                    for i, key in enumerate(dataset_cfg.target_keys):
+                        f.create_dataset(key, data=mean_preds_np[:, i])
 
         except OSError as e:
             raise RuntimeError(f"Failed to write file: {e}")
@@ -170,28 +236,28 @@ class BAL():
         # Load the updated dataset with new HDF5 file included
         new_dataset = Spectra_Regularization_DataPipe(
             dataset_cfg,
-            self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
-            self.cfg.base_seed if hasattr(self.cfg, 'base_seed') else 42,
-            split="train"
+            self.run_cfg.dataset_workers if hasattr(self.run_cfg, 'dataset_workers') else 1,
+            self.run_cfg.base_seed if hasattr(self.run_cfg, 'base_seed') else 42,
+            "train"
         )
 
         # Clone model and trainer from existing
-        model_class = type(trainer.model)
-        new_model = model_class(trainer.cfg.model)
+        # model_class = type(trainer.model)
+        # new_model = model_class(self.run_cfg.model)
         trainer_class = type(trainer)
-        new_trainer = trainer_class(new_model, trainer.cfg, trainer.tc_rng)
+        new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
 
         # Prepare data loader and looper
         train_loader = DataLoader(
             new_dataset,
-            batch_size=trainer.cfg.batch,
-            num_workers=self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
+            batch_size=self.run_cfg.batch,
+            num_workers=self.run_cfg.dataset_workers if hasattr(self.run_cfg, 'dataset_workers') else 1,
             pin_memory=True
         )
         train_looper = InfiniteDataLooper(train_loader)
 
         # Accumulate channel statistics
-        accumulation_steps = getattr(trainer.cfg.opt, 'accumulation_steps', 100)
+        accumulation_steps = getattr(self.run_cfg, 'accumulation_steps', 100)
         for _ in range(accumulation_steps):
             data = next(train_looper)
             new_trainer.accumulate(data)
@@ -296,3 +362,64 @@ class BAL():
         topk_candidates = candidates[topk_indices]
         print("Top k candidates found")
         return topk_candidates
+    
+    def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
+        """
+        Save top-k candidates as a (k, 31) tensor in .npy format.
+        
+        Args:
+            candidates: Tensor containing the top-k candidates
+                    Shape: (k, 24, 32) if has_spectra=True, or (k, 31) if has_spectra=False
+            save_path: Directory to save the file. If None, uses dataset root.
+            filename: Name of the .npy file to save
+        
+        Returns:
+            str: Path to the saved file
+        """
+        import numpy as np
+        import os
+        
+        # Determine save path
+        if save_path is None:
+            dataset_cfg = self.dataset.cfg
+            save_path = dataset_cfg.dataset_root
+        
+        # Ensure save directory exists
+        os.makedirs(save_path, exist_ok=True)
+        
+        # Convert to numpy
+        candidates_np = candidates.cpu().numpy()
+        
+        # print(f"DEBUG: Input candidates shape: {candidates_np.shape}")
+        
+        if self.has_spectra:
+            # candidates shape: (k, 24, 32)
+            # Extract input features (first 31 features) from any ky slice since they're repeated
+            if len(candidates_np.shape) == 3 and candidates_np.shape[2] == 32:
+                # Take the first ky slice and remove the last column (ky values)
+                top_k_features = candidates_np[:, 0, :-1]  # (k, 31)
+                # print(f"DEBUG: Extracted features from spectra format: {top_k_features.shape}")
+            else:
+                raise ValueError(f"Expected candidates shape (k, 24, 32) for spectra, got {candidates_np.shape}")
+        else:
+            # candidates shape: (k, 31)
+            if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 31:
+                top_k_features = candidates_np  # Already in correct format
+                # print(f"DEBUG: Using candidates directly (no spectra): {top_k_features.shape}")
+            else:
+                raise ValueError(f"Expected candidates shape (k, 31) for non-spectra, got {candidates_np.shape}")
+        
+        # Validate final shape
+        if top_k_features.shape[1] != 31:
+            raise ValueError(f"Expected 31 features, got {top_k_features.shape[1]}")
+        
+        # Full save path
+        full_path = os.path.join(save_path, filename)
+        
+        # Save as .npy file
+        np.save(full_path, top_k_features)
+        
+        # print(f"DEBUG: Saved top-{top_k_features.shape[0]} candidates to: {full_path}")
+        # print(f"DEBUG: Final saved shape: {top_k_features.shape}")
+        
+        return full_path

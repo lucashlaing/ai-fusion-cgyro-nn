@@ -163,6 +163,8 @@ def run_train(cfg):
     bal = BAL_HANDLER[project_name](cfg, train_datapipe)
     new_samples = bal.propose_samples(trainer)
     print("new samples found")
+    save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
+    print(f"Candidates saved at {save_path}")
     if cfg.board:
         wandb.finish()
 
