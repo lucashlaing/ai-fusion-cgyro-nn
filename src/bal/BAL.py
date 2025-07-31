@@ -21,16 +21,23 @@ class BAL():
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
-        Generate bounded normal samples based on mean/std/min/max from a distribution JSON.
+        Sample candidate inputs using bounded normal sampling.
 
-        Args:
-            n_samples (int): Number of samples to draw.
-            dist_json_path (str): Path to distribution JSON with mean, std, min, max.
-            buffer_ratio (float): Extra buffer to apply beyond min/max.
-
-        Returns:
-            torch.Tensor: Sampled tensor of shape (n_samples, n_features)
+        If self.has_spectra is True:
+            Return shape (n_samples, 24, 32) with 31 base features + 1 k_y.
+        Else:
+            Return shape (n_samples, 31).
         """
+        import json
+
+        # HARD CODED KY VALUES
+        KY_LOCS = [
+            0.06010753, 0.12021505, 0.18032258, 0.2404301, 0.30053763, 0.54096774,
+            0.66118279, 0.78139784, 0.90161289, 1.02182795, 1.142043, 1.26225805,
+            1.20215052, 1.5988144, 2.12677655, 2.82962789, 3.76547314, 5.01177679,
+            6.67183152, 8.88339377, 11.8302146, 15.75743919, 20.99217655, 27.97098031
+        ]
+
         with open(dist_json_path, 'r') as f:
             dist = json.load(f)
 
@@ -40,7 +47,6 @@ class BAL():
         min_bounds = torch.tensor([dist[var]["min"] for var in var_names])
         max_bounds = torch.tensor([dist[var]["max"] for var in var_names])
 
-        # Add buffer
         range_bounds = max_bounds - min_bounds
         min_bounds -= buffer_ratio * range_bounds
         max_bounds += buffer_ratio * range_bounds
@@ -59,17 +65,18 @@ class BAL():
         if len(samples) < n_samples:
             raise RuntimeError(f"Only sampled {len(samples)} after {attempts} attempts.")
 
-        x_samples = torch.stack(samples)
+        x_samples = torch.stack(samples)  # shape: (n_samples, 31)
 
-        if(self.has_spectra):
-            input_data_expanded = np.repeat(x_samples[:, np.newaxis, :], self.spectra_mean.shape[0], axis=1)
-            spectra_function_data_expanded = np.repeat(
-                self.spectra_mean[:, np.newaxis].unsqueeze(0), len(x_samples), axis=0
-            )
-            x_samples = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2)
-            x_samples = torch.tensor(x_samples)
+        if self.has_spectra:
+            # Add 24 k_y values as the 32nd feature
+            ky_tensor = torch.tensor(KY_LOCS, dtype=torch.float32)  # (24,)
+            ky_expanded = ky_tensor.unsqueeze(0).repeat(n_samples, 1)  # (n_samples, 24)
+            x_expanded = x_samples.unsqueeze(1).repeat(1, 24, 1)  # (n_samples, 24, 31)
+            final_input = torch.cat([x_expanded, ky_expanded.unsqueeze(-1)], dim=-1)  # (n_samples, 24, 32)
+            return final_input
+        else:
+            return x_samples  # (n_samples, 31)
 
-        return x_samples # Shape: (n_samples, n_features)
 
     def get_prediction(self, input, model):
             """
@@ -130,8 +137,6 @@ class BAL():
             torch.Tensor: New predictions from retrained model on candidates
         """
 
-        # CHECK BACK ON THE CFG TO MAKE SURE WE HAVE ALL THE CORRECT ONES
-
         candidates, predictions_per_ky, mean_predictions = data_tuple
         dataset_cfg = self.dataset.cfg
         input_path = os.path.join(dataset_cfg.dataset_root, "train")
@@ -140,22 +145,90 @@ class BAL():
         try:
             # Save candidate data to temporary .h5 file in correct key-by-key format
             with h5py.File(temp_h5_path, 'w') as f:
-                candidates_np = candidates.cpu().numpy()
-                mean_preds_np = mean_predictions.cpu().numpy()
-
-                # Save each input feature separately
-                for i, key in enumerate(dataset_cfg.input_keys):
-                    f.create_dataset(key, data=candidates_np[:, i])
-
-                # Save each target feature separately
-                for i, key in enumerate(dataset_cfg.target_keys):
-                    f.create_dataset(key, data=mean_preds_np[:, i])
-
-                # Save intermediate target if applicable (e.g., sumf as spectra)
-                if self.has_spectra and predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
-                    preds_per_ky_np = predictions_per_ky.cpu().numpy()
-                    # Assuming the first intermediate key is "sumf"
-                    f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=preds_per_ky_np)
+                if self.has_spectra:
+                    # candidates shape: (n_samples, 24, 32)
+                    # Extract input features (first 31 features) and ky values (last feature)
+                    candidates_np = candidates.cpu().numpy()
+                    n_samples = candidates_np.shape[0]
+                    
+                    # Input features are the same across all ky values for each sample
+                    # Take the first ky slice since input features are repeated
+                    input_features = candidates_np[:, 0, :-1]  # (n_samples, 31)
+                    ky_values = candidates_np[:, :, -1]  # (n_samples, 24)
+                    
+                    # Save each input feature separately
+                    for i, key in enumerate(dataset_cfg.input_keys):
+                        f.create_dataset(key, data=input_features[:, i])
+                    
+                    # Save ky values (spectra function)
+                    for i, key in enumerate(dataset_cfg.spectra_function_keys):
+                        if key == "ky":
+                            f.create_dataset(key, data=ky_values)
+                    
+                    # Save target features (mean predictions)
+                    mean_preds_np = mean_predictions.cpu().numpy()
+                    for i, key in enumerate(dataset_cfg.target_keys):
+                        f.create_dataset(key, data=mean_preds_np[:, i])
+                    
+                    # Save intermediate target (predictions per ky)
+                    if predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
+                        preds_per_ky_np = predictions_per_ky.cpu().numpy()
+                        
+                        # Take mean across models if needed
+                        if len(preds_per_ky_np.shape) == 4:  # (model_count, n_samples, 24, 4)
+                            mean_preds_per_ky = np.mean(preds_per_ky_np, axis=0)  # (n_samples, 24, 4)
+                        else:
+                            mean_preds_per_ky = preds_per_ky_np
+                        
+                        # Based on reference file analysis:
+                        # Original sumf shape: (size, nky, 1, nf, ns, 5)
+                        # Reference has nf=2, ns=3
+                        ns = 3  # number of species (electrons + 2 ions)
+                        nf = 2  # number of fields 
+                        
+                        # Create sumf tensor in the original H5 format
+                        sumf_reconstructed = np.zeros((n_samples, 24, 1, nf, ns, 5))
+                        
+                        # Fill in the data based on how _read_path processes it:
+                        # After squeeze: (size, nky, nf, ns, 5)
+                        # After sum over nf: (size, nky, ns, 5)
+                        # Then extracts:
+                        # G_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 0]
+                        # Q_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 1]
+                        # Q_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 1])
+                        # P_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 2])
+                        
+                        # Distribute values across both fields (nf=2) so they sum correctly
+                        # Electrons (species 0)
+                        sumf_reconstructed[:, :, 0, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                        sumf_reconstructed[:, :, 0, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                        sumf_reconstructed[:, :, 0, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                        sumf_reconstructed[:, :, 0, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                        
+                        # Ions (species 1 and 2) - distribute Q_ions and P_ions equally
+                        n_ion_species = ns - 1  # 2 ion species
+                        q_ions_per_species_per_field = mean_preds_per_ky[:, :, 2] / (n_ion_species * nf)
+                        p_ions_per_species_per_field = mean_preds_per_ky[:, :, 3] / (n_ion_species * nf)
+                        
+                        for field_idx in range(nf):
+                            for ion_idx in range(1, ns):  # species 1 and 2 are ions
+                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 1] = q_ions_per_species_per_field
+                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 2] = p_ions_per_species_per_field
+                        
+                        f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
+                
+                else:
+                    # No spectra case
+                    candidates_np = candidates.cpu().numpy()  # (n_samples, 31)
+                    mean_preds_np = mean_predictions.cpu().numpy()
+                    
+                    # Save each input feature separately
+                    for i, key in enumerate(dataset_cfg.input_keys):
+                        f.create_dataset(key, data=candidates_np[:, i])
+                    
+                    # Save each target feature separately
+                    for i, key in enumerate(dataset_cfg.target_keys):
+                        f.create_dataset(key, data=mean_preds_np[:, i])
 
         except OSError as e:
             raise RuntimeError(f"Failed to write file: {e}")
@@ -163,28 +236,28 @@ class BAL():
         # Load the updated dataset with new HDF5 file included
         new_dataset = Spectra_Regularization_DataPipe(
             dataset_cfg,
-            self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
-            self.cfg.base_seed if hasattr(self.cfg, 'base_seed') else 42,
-            split="train"
+            self.run_cfg.dataset_workers if hasattr(self.run_cfg, 'dataset_workers') else 1,
+            self.run_cfg.base_seed if hasattr(self.run_cfg, 'base_seed') else 42,
+            "train"
         )
 
         # Clone model and trainer from existing
-        model_class = type(trainer.model)
-        new_model = model_class(trainer.cfg.model)
+        # model_class = type(trainer.model)
+        # new_model = model_class(self.run_cfg.model)
         trainer_class = type(trainer)
-        new_trainer = trainer_class(new_model, trainer.cfg, trainer.tc_rng)
+        new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
 
         # Prepare data loader and looper
         train_loader = DataLoader(
             new_dataset,
-            batch_size=trainer.cfg.batch,
-            num_workers=self.cfg.dataset_workers if hasattr(self.cfg, 'dataset_workers') else 1,
+            batch_size=self.run_cfg.batch,
+            num_workers=self.run_cfg.dataset_workers if hasattr(self.run_cfg, 'dataset_workers') else 1,
             pin_memory=True
         )
         train_looper = InfiniteDataLooper(train_loader)
 
         # Accumulate channel statistics
-        accumulation_steps = getattr(trainer.cfg.opt, 'accumulation_steps', 100)
+        accumulation_steps = getattr(self.run_cfg, 'accumulation_steps', 100)
         for _ in range(accumulation_steps):
             data = next(train_looper)
             new_trainer.accumulate(data)
@@ -256,7 +329,7 @@ class BAL():
         """
         all_predictions, _ = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, trainer.model.lowerModel)
+        lower_model_pred, _ = self.get_prediction(candidates, trainer.model.lowerModel)
 
         # makes our predictions to be for the difference
         all_predictions = all_predictions - lower_model_pred
@@ -269,11 +342,13 @@ class BAL():
 
     def propose_samples(self, trainer):
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        print("Candidates found")
 
         # Each returns (scores, indices) where indices are into `candidates`
         model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
+        print("model difference Done")
         eig_scores, eig_indices = self.eig(candidates, trainer)
-
+        print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
         # Initialize full score tensors
         combined_scores = torch.zeros(len(candidates))
@@ -285,5 +360,66 @@ class BAL():
         # Select top-K based on combined score
         topk_scores, topk_indices = torch.topk(combined_scores, self.cfg.new_sample_size)
         topk_candidates = candidates[topk_indices]
-
+        print("Top k candidates found")
         return topk_candidates
+    
+    def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
+        """
+        Save top-k candidates as a (k, 31) tensor in .npy format.
+        
+        Args:
+            candidates: Tensor containing the top-k candidates
+                    Shape: (k, 24, 32) if has_spectra=True, or (k, 31) if has_spectra=False
+            save_path: Directory to save the file. If None, uses dataset root.
+            filename: Name of the .npy file to save
+        
+        Returns:
+            str: Path to the saved file
+        """
+        import numpy as np
+        import os
+        
+        # Determine save path
+        if save_path is None:
+            dataset_cfg = self.dataset.cfg
+            save_path = dataset_cfg.dataset_root
+        
+        # Ensure save directory exists
+        os.makedirs(save_path, exist_ok=True)
+        
+        # Convert to numpy
+        candidates_np = candidates.cpu().numpy()
+        
+        # print(f"DEBUG: Input candidates shape: {candidates_np.shape}")
+        
+        if self.has_spectra:
+            # candidates shape: (k, 24, 32)
+            # Extract input features (first 31 features) from any ky slice since they're repeated
+            if len(candidates_np.shape) == 3 and candidates_np.shape[2] == 32:
+                # Take the first ky slice and remove the last column (ky values)
+                top_k_features = candidates_np[:, 0, :-1]  # (k, 31)
+                # print(f"DEBUG: Extracted features from spectra format: {top_k_features.shape}")
+            else:
+                raise ValueError(f"Expected candidates shape (k, 24, 32) for spectra, got {candidates_np.shape}")
+        else:
+            # candidates shape: (k, 31)
+            if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 31:
+                top_k_features = candidates_np  # Already in correct format
+                # print(f"DEBUG: Using candidates directly (no spectra): {top_k_features.shape}")
+            else:
+                raise ValueError(f"Expected candidates shape (k, 31) for non-spectra, got {candidates_np.shape}")
+        
+        # Validate final shape
+        if top_k_features.shape[1] != 31:
+            raise ValueError(f"Expected 31 features, got {top_k_features.shape[1]}")
+        
+        # Full save path
+        full_path = os.path.join(save_path, filename)
+        
+        # Save as .npy file
+        np.save(full_path, top_k_features)
+        
+        # print(f"DEBUG: Saved top-{top_k_features.shape[0]} candidates to: {full_path}")
+        # print(f"DEBUG: Final saved shape: {top_k_features.shape}")
+        
+        return full_path

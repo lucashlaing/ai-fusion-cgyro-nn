@@ -1,8 +1,8 @@
-latent_dim: 1024
-hidden_layer: 2
+latent_dim: 256
+hidden_layer: 4
 input_dim: 32
 target_dim: 4
-num_resnet: 8
+num_resnet: 4
 
 ky: 24
 

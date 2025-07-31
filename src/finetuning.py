@@ -15,6 +15,7 @@ from utils import (
     timer,
     InfiniteDataLooper,
     load_prev_model,
+    upload_to_s3,
 )
 from tqdm import tqdm
 
@@ -49,14 +50,17 @@ def run_train(cfg):
 
     # Model and dataset creation
     project_name = cfg.project
+    checkpoint_path = cfg.model.checkpoint_path
     if(project_name == "CGYRO"):
+        # our CGYRO model 
         lowerModel = MODEL_HANDLER["SR"](cfg.model)
-        checkpoint_path = cfg.checkpoint_path
         load_prev_model(lowerModel, checkpoint_path)
         print("Lower Fidelity Model Loaded Successful")
         model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
     else:
+        # other models
         model = MODEL_HANDLER[project_name](cfg.model)
+        load_prev_model(model, checkpoint_path)
     
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
@@ -157,14 +161,11 @@ def run_train(cfg):
             ratio = (trainer.train_step - cfg.time_warm) / total_steps
             timer.estimate_time("time estimate", ratio)
 
-    # training model is done
-    # BAL start
-    print("Training Done")
-    bal = BAL_HANDLER[project_name](cfg, train_datapipe)
-    new_samples = bal.propose_samples(trainer)
-    print("new samples found")
-    save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
-    print(f"Candidates saved at {save_path}")
+    # SAVING THE MODEL WEIGHTS HERE 
+    print("final model weights saved at ", ckpt_dir)
+    trainer.save(ckpt_dir)
+    upload_to_s3(f"ersp_res/checkpoints/{project_name}_{time_stamp}", ckpt_dir)
+
     if cfg.board:
         wandb.finish()
 
