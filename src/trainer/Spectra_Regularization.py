@@ -61,11 +61,18 @@ class Spectra_Regularization_Trainer(Base_Trainer):
 
         return pred_flux_per_ky, pred_flux
 
+    def get_mask(self, data):
+        mask = data[3]
+        return mask
+
     def _loss_fn(self, data):
         # get pred fluxes, always in real
         pred_flux_per_ky, pred_flux = self.get_pred(data)
         # get gt fluxes, aways in real
         _, gt_flux_per_ky, gt_flux = self.get_input_target(data)
+        mask = self.get_mask(data)
+        mask_expanded = mask.unsqueeze(-1).bool()  # (batch, nky, 1)
+        mask_expanded = mask_expanded.expand(-1, -1, 4)  # [batch, nky, 4]
 
         # transform fluxes accordigly, asinh is must, then normalize if needed
         gt_flux_per_ky_trans = torch.asinh(gt_flux_per_ky)
@@ -86,24 +93,59 @@ class Spectra_Regularization_Trainer(Base_Trainer):
             )
         else:
             flux_loss = mean_squared_loss(gt_flux_trans, pred_flux_trans)
-        flux_per_ky_loss = mean_squared_loss(gt_flux_per_ky_trans, pred_flux_per_ky_trans)
+
+        # Filter only the masked kys
+        gt_selected = gt_flux_per_ky_trans[mask_expanded]      # (num_selected,)
+        pred_selected = pred_flux_per_ky_trans[mask_expanded]  # (num_selected,)
+
+        # Compute loss only on those kys
+        flux_per_ky_loss = mean_squared_loss(gt_selected, pred_selected)
+
         w_target = self.model_cfg.w_target
         w_spectra = self.model_cfg.w_spectra
-        loss = w_target * flux_loss + w_spectra * flux_per_ky_loss
+        loss = flux_per_ky_loss # altered to only train on the per ky loss
         return loss, flux_per_ky_loss, flux_loss
+    
+    def iter(self, data, return_loss=False):
+        # === Check data before moving to device ===
+        if isinstance(data, (list, tuple)):
+            for i, t in enumerate(data):
+                if torch.isnan(t).any() or torch.isinf(t).any():
+                    print(f"[NaN/Inf DETECTED] in input tensor {i} before device move at step {self.train_step}")
+        else:
+            if torch.isnan(data).any() or torch.isinf(data).any():
+                print(f"[NaN/Inf DETECTED] in single input tensor before device move at step {self.train_step}")
 
-    def iter(self, data):
         data = self.move_to_device(data)
+
+        # Compute loss
         loss, _, _ = self._loss_fn(data)
+
+        # === Check loss before backward ===
+        if torch.isnan(loss).any() or torch.isinf(loss).any():
+            print(f"[NaN/Inf DETECTED] in loss BEFORE backward at step {self.train_step}")
+            if return_loss:
+                return loss  # Exit early if you want to stop here
+
         loss.backward()
-        # Gradient clipping
+
+        # === Check gradients after backward ===
         model = self.model.module if hasattr(self.model, "module") else self.model
+        for name, param in model.named_parameters():
+            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                print(f"[NaN/Inf DETECTED] in gradient of {name} at step {self.train_step}")
+
+        # Gradient clipping
         torch.nn.utils.clip_grad_norm_(model.parameters(), self.opt_cfg.gnorm_clip)
+
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
 
         self.train_step += 1
+
+        if return_loss:
+            return loss
 
     def get_test_loss(self, dataloader):
         """

@@ -9,14 +9,19 @@ import h5py
 class Spectra_Regularization_DataPipe(BaseDataPipe):
 
     def _read_path(self, file_path):
+        # getting keys from cfg
         input_keys = self.cfg.input_keys
         target_keys = self.cfg.target_keys
         spectra_function_keys = self.cfg.spectra_function_keys
         intermediate_target_keys = self.cfg.intermediate_target_keys
+        failed_mask_key = "meta/" + self.cfg.mask_key
+
+        # creating lists to put the values
         input_list = []
         target_list = []
         spectra_list = []
         intermediate_target_list = []
+
         with h5py.File(file_path, "r") as f:
             for key in input_keys:
                 # Each of shape (N,)
@@ -26,12 +31,25 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
             for key in spectra_function_keys:
                 spectra_list.append(np.array(f[key]))
             for key in intermediate_target_keys:
-                flux_spectrum = np.array(f[key])
-                # (size, nky, 1, nf, ns, 5) - > (size, nky, nf, ns, 5)
-                squeezed_flux_spectrum = np.squeeze(flux_spectrum)
-                # (size, nky, nf, ns, 5) -> (size, nky, ns, 5)
-                summed_flux_spectrum = np.sum(squeezed_flux_spectrum, axis=2)
+                flux_spectrum = np.array(f[key])  # (size, nky, 2, nf, ns, 5)
+
+                assert flux_spectrum.shape[2] == 2, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
+
+                # Option 1: Select the first index at dim=2 (assuming it’s always the useful one)
+                flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (size, nky, nf, ns, 5)
+
+                # Option 2 (optional): Check if both are equal
+                # assert np.allclose(flux_spectrum[:, :, 0], flux_spectrum[:, :, 1]), "Dim=2 entries differ"
+
+                # Sum over nf
+                summed_flux_spectrum = np.sum(flux_spectrum, axis=2)  # (size, nky, ns, 5)
+
                 intermediate_target_list.append(summed_flux_spectrum)
+            
+            # get the failed mask containing which kys failed
+            failed_mask = np.array(f[failed_mask_key])
+
+
 
         # Stack data and convert to tensors
         input_data = np.stack(input_list, axis=1)
@@ -55,11 +73,11 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
         # cat them tobe (size, nky, 4)
         target_flux_per_ky = torch.stack((G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1)
 
-        return (input, target_flux_per_ky, target_flux), input.shape[0]
+        failed_mask_tensor = torch.tensor(failed_mask, dtype=torch.float32)
+
+        return (input, target_flux_per_ky, target_flux, failed_mask_tensor), input.shape[0]
 
     def _get_slice(self, data, index):
-        input_tensor, target_tensor, sumf_tensor = data
-        return input_tensor[index], target_tensor[index], sumf_tensor[index]
+        input_tensor, target_tensor, sumf_tensor, failed_mask_tensor = data
+        return input_tensor[index], target_tensor[index], sumf_tensor[index], failed_mask_tensor[index]
 
-    def _proc_data(self, data, rng, tc_rng):
-        return data
