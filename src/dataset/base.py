@@ -3,7 +3,6 @@ import glob
 import numpy as np
 import torch
 from torch.utils.data import IterableDataset
-print(os.listdir("./src/tglf_sumf_data_full_madcut_filter/train"))
 
 class BaseDataPipe(IterableDataset):
     """

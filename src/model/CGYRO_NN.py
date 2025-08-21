@@ -51,7 +51,7 @@ class CGYRO_NN(Base):
         return decoded_x
 
     def accumulate(self, data):
-        input, target_flux_per_ky, target_flux = data
+        input, target_flux_per_ky, target_flux, _ = data
         self._inputNormalizer(input, accumulate=True)
         self._targetNormalizerPerWavenumber(target_flux_per_ky, accumulate=True)
         self._targetNormalizer(target_flux, accumulate=True)

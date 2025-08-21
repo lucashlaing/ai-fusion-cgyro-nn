@@ -260,7 +260,7 @@ class Base_Trainer:
             prefix: Prefix for the loss output.
             board: Flag to determine if the loss should be logged to wandb.
         """
-        loss = self.get_loss(data)
+        loss, _, _ = self.get_loss(data)
         print(f"train step: {self.train_step}, {prefix}_loss: {loss}")
         if board:
             log_map = {"step": self.train_step}

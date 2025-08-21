@@ -114,7 +114,7 @@ def load_config_and_checkpoints(dir_path: str):
 
 def run_plot(cfg):
     """
-    Run the evaluation loop.
+    Run the evaluation loop and log average flux_per_ky loss.
 
     Parameters
     ----------
@@ -123,33 +123,28 @@ def run_plot(cfg):
     """
 
     if cfg.board:
-            wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
-            wandb.init(
-                project=f"{cfg.project}-eval",
-                config=OmegaConf.to_container(cfg, resolve=True),
-            )
-            with open_dict(cfg):
-                cfg.run_id = wandb.run.id
-                cfg.entity = wandb.run.entity
-                cfg.full_project_name = wandb.run.project
+        wandb.login(key='f143329a989e1852871928c4c018b121d35334a3')  # TEMP FIX
+        wandb.init(
+            project=f"{cfg.project}-eval",
+            config=OmegaConf.to_container(cfg, resolve=True),
+        )
+        with open_dict(cfg):
+            cfg.run_id = wandb.run.id
+            cfg.entity = wandb.run.entity
+            cfg.full_project_name = wandb.run.project
 
     set_seed(cfg.base_seed)
     tc_rng = torch.Generator()
     tc_rng.manual_seed(cfg.base_seed)
 
-    # Print the project-level Hydra config
+    # Print Hydra config
     print(OmegaConf.to_yaml(cfg))
 
-    # Model and dataset creation
     project_name = cfg.project
-
-    # Get the current timestamp for logging purposes
     time_stamp = datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S")
 
-    # Create the test dataset handler
+    # Data setup
     test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
-
-    # Create the DataLoader for the test set
     test_loader = DataLoader(
         test_datapipe,
         batch_size=cfg.batch,
@@ -157,91 +152,73 @@ def run_plot(cfg):
         pin_memory=True,
     )
 
-    # Initialize a list to store the results
-    results = []
-
-    # Print the current timestamp
-    print("stamp: {}".format(time_stamp))
-
     save_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/full_plot/"
-    if not os.path.exists(save_dir):
-        print('creating save dirs')
-        os.makedirs(save_dir)
-
-    print(save_dir)
-
+    os.makedirs(save_dir, exist_ok=True)
+    print(f"Results will be saved to: {save_dir}")
     plot_path = os.path.join(save_dir, f"eval_plot.png")
 
+    # Model setup
     checkpoint_path = cfg.checkpoint_path
-    if(project_name == "CGYRO"):
-        # our CGYRO model 
+    if project_name == "CGYRO":
         lowerModel = MODEL_HANDLER["SR"](cfg.model)
         load_prev_model(lowerModel, checkpoint_path)
-        print("Lower Fidelity Model Loaded Successful")
+        print("Lower Fidelity Model Loaded Successfully")
         model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
     else:
-        # other models
         model = MODEL_HANDLER[project_name](cfg.model)
         load_prev_model(model, checkpoint_path)
 
-    # Trainer creation
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
-    
-    fig, axs = plt.subplots(2, 2)  # 2x2 layout for 4 channels
-    axs = axs.flatten()  # Flatten the grid to iterate over it easily
 
-    pred_data = []
-    target_data = []
+    # Accumulate predictions and targets
+    all_preds = []
+    all_targets = []
 
-    rmsle_normalizer = Normalizer(size=4)
-    rmsle_avg_normalizer = Normalizer(size=1)
+    total_flux_per_ky_loss = 0.0
+    num_batches = 0
 
-    # Process all batches in the test_loader
-    with torch.no_grad():  # Ensure no gradients are calculated
-        for test_data in tqdm(test_loader):
-            # Step 1: Move the data to the appropriate device (e.g., GPU if available)
-            data = trainer.move_to_device(test_data)
+    with torch.no_grad():
+        for batch in tqdm(test_loader, desc="Evaluating"):
+            batch = trainer.move_to_device(batch)
 
-            # Step 2: Get the input and target tensors from the data object
-            target_tensor = data[-1]
+            # Forward pass and loss computation
+            loss, flux_per_ky_loss, _ = trainer._loss_fn(batch)
+            total_flux_per_ky_loss += flux_per_ky_loss.item()
+            num_batches += 1
 
-            # Step 3: Generate predictions using the model and convert them to numpy arrays
-            pred = trainer.get_pred(data)
-            if isinstance(pred, tuple):
-                pred = pred[1]
-            target = target_tensor
-            pred_data.append(pred)
-            target_data.append(target)
+            # Store predictions and targets for plotting
+            _, pred_flux = trainer.get_pred(batch)
+            _, _, gt_flux = trainer.get_input_target(batch)
 
-            rmsle_normalizer.forward(torch.sqrt(torch.mean(sle(pred, target),dim=0)), accumulate=True)
-            rmsle_avg_normalizer.forward(torch.sqrt(torch.mean(sle(pred, target))), accumulate=True)
+            all_preds.append(pred_flux)
+            all_targets.append(gt_flux)
 
-        rmsle_normalizer.report()
-        rmsle_avg_normalizer.report()
+    # Average loss
+    avg_flux_per_ky_loss = total_flux_per_ky_loss / num_batches
+    print(f"[EVAL] Average flux_per_ky_loss over test set: {avg_flux_per_ky_loss:.6f}")
 
-        # pred_data = np.concatenate(pred_data, axis=0)
-        # target_data = np.concatenate(target_data, axis=0)
-        pred_data = torch.cat(pred_data, dim=0)
-        target_data = torch.cat(target_data, dim=0)
+    # Concatenate for plotting
+    pred_tensor = torch.cat(all_preds, dim=0)
+    target_tensor = torch.cat(all_targets, dim=0)
 
-        print_metrics(pred_data, target_data)
+    # Plot
+    trainer.plot_data(pred_tensor.cpu().numpy(), target_tensor.cpu().numpy())
+    plt.savefig(plot_path)
+    plt.close()
+    print(f"Plot saved at: {plot_path}")
 
-        pred_numpy = pred_data.cpu().detach().numpy()
-        targ_numpy = target_data.cpu().detach().numpy()
+    # Log to wandb if enabled
+    if cfg.board:
+        wandb.log({
+            "eval/avg_flux_per_ky_loss": avg_flux_per_ky_loss,
+            "eval/plot": wandb.Image(plot_path),
+        })
+        wandb.finish()
 
-        trainer.plot_data(pred_numpy, targ_numpy)
-
-        plt.savefig(plot_path)
-        plt.close()
-        print(f"plot saved at {plot_path}")
-        if cfg.board:
-            wandb.log({"full plots": wandb.Image(plot_path)})
-            wandb.finish()
-
-    return results
+    return avg_flux_per_ky_loss
 
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="SR")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):
     """
     Main function to run the training.

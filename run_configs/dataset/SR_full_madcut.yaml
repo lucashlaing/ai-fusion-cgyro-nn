@@ -1,4 +1,4 @@
-dataset_root: './src/tglf_sumf_data_full_madcut_filter'
+dataset_root: './test_data'
 input_keys: [
     "RLTS_3",
     "KAPPA_LOC",
@@ -69,6 +69,8 @@ intermediate_target_keys: [
     # "pots",
     "sumf"
 ]
+
+mask_key: "failed_mask"
  
 config_keys: [
     "NMODES",

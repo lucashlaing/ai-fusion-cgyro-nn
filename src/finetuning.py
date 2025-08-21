@@ -23,14 +23,6 @@ os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
 
 def run_train(cfg):
-    """
-    Run the training loop.
-
-    Parameters
-    ----------
-    cfg : DictConfig
-        Configuration object containing training parameters.
-    """
     set_seed(cfg.base_seed)
     tc_rng = torch.Generator()
     tc_rng.manual_seed(cfg.base_seed)
@@ -50,25 +42,21 @@ def run_train(cfg):
 
     # Model and dataset creation
     project_name = cfg.project
-    checkpoint_path = cfg.model.checkpoint_path
+    checkpoint_path = cfg.checkpoint_path
     if(project_name == "CGYRO"):
-        # our CGYRO model 
         lowerModel = MODEL_HANDLER["SR"](cfg.model)
         load_prev_model(lowerModel, checkpoint_path)
         print("Lower Fidelity Model Loaded Successful")
         model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
     else:
-        # other models
         model = MODEL_HANDLER[project_name](cfg.model)
         load_prev_model(model, checkpoint_path)
     
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
 
-    # Trainer creation
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
 
-    # Data loaders creation
     train_loader = DataLoader(
         train_datapipe,
         batch_size=cfg.batch,
@@ -82,15 +70,12 @@ def run_train(cfg):
         pin_memory=True,
     )
 
-    # Printing meta info of the training
     time_stamp = datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S")
     print("stamp: {}".format(time_stamp))
 
-    # Infinite data loopers for training and testing
     train_loopers = InfiniteDataLooper(train_loader)
     test_loopers = InfiniteDataLooper(test_loader)
 
-    # Accumulate channel mean and std for model
     print("Accumulating channel mean and std for model...")
     for _ in tqdm(range(cfg.accumulation_steps)):
         data = next(train_loopers)
@@ -101,10 +86,8 @@ def run_train(cfg):
     else:
         trainer.model.report_stats()
 
-    # Training loop starts
     total_steps = cfg.epochs * cfg.steps_per_epoch
 
-    # Save model config to the checkpoint dir
     ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"
     if not os.path.exists(ckpt_dir):
         os.makedirs(ckpt_dir)
@@ -114,6 +97,24 @@ def run_train(cfg):
     for _ in tqdm(range(total_steps + 1)):
         train_data = next(train_loopers)
 
+        # === DEBUG CHECK 1: Data ===
+        if isinstance(train_data, (list, tuple)):
+            tensors_to_check = train_data
+        else:
+            tensors_to_check = [train_data]
+        for i, t in enumerate(tensors_to_check):
+            if torch.isnan(t).any() or torch.isinf(t).any():
+                print(f"[NaN/Inf DETECTED] in training input tensor {i} at step {trainer.train_step}")
+        
+        # === DEBUG CHECK 2: Model output ===
+        with torch.no_grad():
+            try:
+                out = trainer.model(train_data[0] if isinstance(train_data, (list, tuple)) else train_data)
+                if torch.isnan(out).any() or torch.isinf(out).any():
+                    print(f"[NaN/Inf DETECTED] in model output at step {trainer.train_step}")
+            except Exception as e:
+                print(f"Error during forward pass debug at step {trainer.train_step}: {e}")
+
         # Log loss
         if (
             (trainer.train_step % cfg.loss_freq == 0)
@@ -121,16 +122,10 @@ def run_train(cfg):
             or (trainer.train_step % (cfg.loss_freq // 10) == 0 and trainer.train_step >= total_steps - cfg.loss_freq)
         ):
             with torch.no_grad():
-                # Train loss and error
-                trainer.print_metrics(train_data, "train")
                 trainer.board_loss(train_data, "train", cfg.board)
-
-                # Test loss and error # NOTE for futian to check
                 test_data = next(test_loopers)
-                trainer.print_metrics(test_data, "test")
                 trainer.board_loss(test_data, "test", cfg.board)
 
-        # Log test error plot
         if cfg.plot and (
             (trainer.train_step % cfg.plot_freq == 0)
             or (trainer.train_step % (cfg.plot_freq // 10) == 0 and trainer.train_step <= cfg.plot_freq)
@@ -143,7 +138,6 @@ def run_train(cfg):
                     os.makedirs(plot_dir)
                 trainer.eval_plot(test_data, plot_dir + str(trainer.train_step), cfg.board)
 
-        # Save checkpoint
         if trainer.train_step % cfg.save_freq == 0:
             ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"
             if not os.path.exists(ckpt_dir):
@@ -151,26 +145,31 @@ def run_train(cfg):
             print("Current time: " + datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S"))
             trainer.save(ckpt_dir)
 
-        # Training iteration
-        trainer.iter(train_data)
+        # === DEBUG CHECK 3 & 4: Loss & Gradients ===
+        loss_val = trainer.iter(train_data, return_loss=True)  # You may need to modify `iter()` to return loss
+        if isinstance(loss_val, torch.Tensor):
+            if torch.isnan(loss_val).any() or torch.isinf(loss_val).any():
+                print(f"[NaN/Inf DETECTED] in loss at step {trainer.train_step}")
 
-        # Time estimation
+        for name, param in trainer.model.named_parameters():
+            if param.grad is not None and (torch.isnan(param.grad).any() or torch.isinf(param.grad).any()):
+                print(f"[NaN/Inf DETECTED] in gradient of {name} at step {trainer.train_step}")
+
         if trainer.train_step == cfg.time_warm:
             timer.tic("time estimate")
         if trainer.train_step > 0 and (trainer.train_step % cfg.time_freq == 0):
             ratio = (trainer.train_step - cfg.time_warm) / total_steps
             timer.estimate_time("time estimate", ratio)
 
-    # SAVING THE MODEL WEIGHTS HERE 
     print("final model weights saved at ", ckpt_dir)
     trainer.save(ckpt_dir)
-    upload_to_s3(f"ersp_res/checkpoints/{project_name}_{time_stamp}", ckpt_dir)
 
     if cfg.board:
         wandb.finish()
 
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="SR")
 def main(cfg: DictConfig):
     """
     Main function to run the training.

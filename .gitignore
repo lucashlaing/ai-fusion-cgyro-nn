@@ -3,3 +3,4 @@ wandb
 src/tglf_sumf_data_full_madcut_filter/
 .env
 build/
+test_data/
