@@ -71,7 +71,7 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # get gt fluxes, aways in real
         _, gt_flux_per_ky, gt_flux = self.get_input_target(data)
         mask = self.get_mask(data)
-        mask_expanded = mask.unsqueeze(-1).bool()  # (batch, nky, 1)
+        mask_expanded = (mask == 0).unsqueeze(-1)   # 0 means flux is good
         mask_expanded = mask_expanded.expand(-1, -1, 4)  # [batch, nky, 4]
 
         # transform fluxes accordigly, asinh is must, then normalize if needed
@@ -98,6 +98,12 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         gt_selected = gt_flux_per_ky_trans[mask_expanded]      # (num_selected,)
         pred_selected = pred_flux_per_ky_trans[mask_expanded]  # (num_selected,)
 
+        # debugging in case of equal fluxes (should never happen)
+        if torch.equal(gt_selected, pred_selected):
+            print("Tensors are exactly the same!")
+            print("Values:\n", gt_selected)
+            print(mask_expanded)
+        
         # Compute loss only on those kys
         flux_per_ky_loss = mean_squared_loss(gt_selected, pred_selected)
 
