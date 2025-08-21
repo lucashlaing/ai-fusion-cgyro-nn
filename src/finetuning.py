@@ -169,7 +169,7 @@ def run_train(cfg):
 
 
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="SR")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):
     """
     Main function to run the training.
