@@ -160,7 +160,8 @@ def run_train(cfg):
     # training model is done
     # BAL start
     print("Training Done")
-    bal = BAL_HANDLER[project_name](cfg, train_datapipe)
+    full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset)
     new_samples = bal.propose_samples(trainer)
     print("new samples found")
     save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)

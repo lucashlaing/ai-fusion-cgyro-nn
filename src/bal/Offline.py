@@ -13,8 +13,9 @@ from .BAL import BAL
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Offline(BAL):
-    def __init__(self, run_cfg, dataset):
+    def __init__(self, run_cfg, dataset, pool_dataset):
         super().__init__(run_cfg, dataset)
+        self.pool_dataset = pool_dataset
 
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
@@ -34,7 +35,7 @@ class Offline(BAL):
         
 
         # Materialize dataset into a list since it's iterable
-        dataset_list = list(self.dataset)  
+        dataset_list = list(self.pool_dataset)  
         dataset_size = len(dataset_list)
 
         if n_samples > dataset_size:
