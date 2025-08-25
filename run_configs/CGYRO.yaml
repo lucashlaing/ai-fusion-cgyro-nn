@@ -9,7 +9,7 @@ defaults:
 
 project: CGYRO
 board: False
-plot: True
+plot: False
 experiment: "SR"
 dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth

@@ -180,42 +180,46 @@ class BAL():
                             mean_preds_per_ky = preds_per_ky_np
                         
                         # Based on reference file analysis:
-                        # Original sumf shape: (size, nky, 1, nf, ns, 5)
+                        # Original sumf shape: (size, nky, 2, nf, ns, 5)
                         # Reference has nf=2, ns=3
+                        n_samples, nky, _ = mean_preds_per_ky.shape
                         ns = 3  # number of species (electrons + 2 ions)
                         nf = 2  # number of fields 
                         
-                        # Create sumf tensor in the original H5 format
-                        sumf_reconstructed = np.zeros((n_samples, 24, 1, nf, ns, 5))
+                        ### CHANGED: must create (n_samples, nky, 2, nf, ns, 5), not (..,1,..)
+                        sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5))
                         
-                        # Fill in the data based on how _read_path processes it:
-                        # After squeeze: (size, nky, nf, ns, 5)
-                        # After sum over nf: (size, nky, ns, 5)
-                        # Then extracts:
-                        # G_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 0]
-                        # Q_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 1]
-                        # Q_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 1])
-                        # P_ions_per_ky = sum(flux_per_spicies_per_ky[:, :, 1:, 2])
-                        
-                        # Distribute values across both fields (nf=2) so they sum correctly
-                        # Electrons (species 0)
-                        sumf_reconstructed[:, :, 0, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
-                        sumf_reconstructed[:, :, 0, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
-                        sumf_reconstructed[:, :, 0, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
-                        sumf_reconstructed[:, :, 0, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
-                        
-                        # Ions (species 1 and 2) - distribute Q_ions and P_ions equally
-                        n_ion_species = ns - 1  # 2 ion species
-                        q_ions_per_species_per_field = mean_preds_per_ky[:, :, 2] / (n_ion_species * nf)
-                        p_ions_per_species_per_field = mean_preds_per_ky[:, :, 3] / (n_ion_species * nf)
-                        
-                        for field_idx in range(nf):
-                            for ion_idx in range(1, ns):  # species 1 and 2 are ions
-                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 1] = q_ions_per_species_per_field
-                                sumf_reconstructed[:, :, 0, field_idx, ion_idx, 2] = p_ions_per_species_per_field
+                        # Fill both "slices" at dim=2, because _read_path later selects [:,:,0]
+                        for slice_idx in range(2):
+                            # Electrons (species 0)
+                            sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                            sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf  # G_elec
+                            sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                            sumf_reconstructed[:, :, slice_idx, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf  # Q_elec
+                            
+                            # Ions (species 1 and 2) - distribute Q_ions and P_ions equally
+                            n_ion_species = ns - 1  # 2 ion species
+                            q_ions_per_species_per_field = mean_preds_per_ky[:, :, 2] / (n_ion_species * nf)
+                            p_ions_per_species_per_field = mean_preds_per_ky[:, :, 3] / (n_ion_species * nf)
+                            
+                            for field_idx in range(nf):
+                                for ion_idx in range(1, ns):  # species 1 and 2 are ions
+                                    sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions_per_species_per_field
+                                    sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions_per_species_per_field
                         
                         f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
                 
+                     # --- Create required meta group and keys ---
+                    # meta/: <Group> with keys: ['failed_mask', 'total_count']
+                    # failed_mask should be all zeros for each input & ky → shape (n_samples, nky)
+                    # total_count is the number of ky points we use → 24
+                    meta_grp = f.create_group("meta")
+                    failed_mask_zeros = np.zeros((n_samples, nky), dtype=np.float32)
+                    # Use the configured mask key name inside meta/
+                    meta_grp.create_dataset(dataset_cfg.mask_key, data=failed_mask_zeros)
+                    total_count_arr = np.full((n_samples,), nky, dtype=np.int32)
+                    meta_grp.create_dataset("total_count", data=total_count_arr)
+
                 else:
                     # No spectra case
                     candidates_np = candidates.cpu().numpy()  # (n_samples, 31)

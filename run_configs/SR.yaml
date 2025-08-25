@@ -8,8 +8,8 @@ defaults:
   - override hydra/job_logging: none
 
 project: SR
-board: True
-plot: True
+board: False
+plot: False
 experiment: "SR"
 dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth

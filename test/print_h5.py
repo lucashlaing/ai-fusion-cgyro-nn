@@ -34,36 +34,41 @@ def extract_and_save_h5_data(h5_dir, save_to_csv=True):
                         df = pd.DataFrame(reshaped, columns=col_names)
                     df.to_csv(os.path.join(output_dir, f"{name}.csv"), index=False)
 
+                # ✅ main dataset loop (moved back out of save_as_csv)
                 for key in f.keys():
                     item = f[key]
                     if isinstance(item, h5py.Dataset):
-                        data = item[()]
+                        try:
+                            data = item[()]
+                            if key.lower() == "sumf":
+                                assert data.ndim >= 3, f"Unexpected shape for sumf: {data.shape}"
+                                assert data.shape[2] == 2, f"Unexpected shape at dim=2: {data.shape}"
+                                data = data[:, :, 0, :, :, :]  # remove dim=2
+                                data = np.sum(data, axis=2)     # sum over nf -> (size, nky, ns, 5)
 
-                        if key.lower() == "sumf":
-                            # Shape: (size, nky, 2, nf, ns, 5)
-                            assert data.shape[2] == 2, f"Unexpected shape at dim=2: {data.shape}"
-                            data = data[:, :, 0, :, :, :]  # remove dim=2
-                            data = np.sum(data, axis=2)     # sum over nf -> (size, nky, ns, 5)
+                                # Now make target_flux_per_ky
+                                G_elec_per_ky = data[:, :, 0, 0]
+                                Q_elec_per_ky = data[:, :, 0, 1]
+                                Q_ions_per_ky = np.sum(data[:, :, 1:, 1], axis=-1)
+                                P_ions_per_ky = np.sum(data[:, :, 1:, 2], axis=-1)
 
-                            # Now make target_flux_per_ky
-                            G_elec_per_ky = data[:, :, 0, 0]  # (size, nky)
-                            Q_elec_per_ky = data[:, :, 0, 1]  # (size, nky)
-                            Q_ions_per_ky = np.sum(data[:, :, 1:, 1], axis=-1)  # (size, nky)
-                            P_ions_per_ky = np.sum(data[:, :, 1:, 2], axis=-1)  # (size, nky)
-
-                            target_flux_per_ky = np.stack(
-                                (G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), axis=-1
-                            )  # (size, nky, 4)
-
-                            save_as_csv("target_flux_per_ky", target_flux_per_ky)
-                        else:
-                            save_as_csv(key, data)
+                                target_flux_per_ky = np.stack(
+                                    (G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), axis=-1
+                                )
+                                save_as_csv("target_flux_per_ky", target_flux_per_ky)
+                            else:
+                                save_as_csv(key, data)
+                        except Exception as e:
+                            print(f"    Error while saving dataset '{key}': {e}")
 
                     elif isinstance(item, h5py.Group):
                         print(f"  {key}/: <Group> with keys: {list(item.keys())}")
                         for subkey in item.keys():
-                            subdata = item[subkey][()]
-                            save_as_csv(subkey, subdata)
+                            try:
+                                subdata = item[subkey][()]
+                                save_as_csv(subkey, subdata)
+                            except Exception as e:
+                                print(f"    Error while saving sub-dataset '{key}/{subkey}': {e}")
 
         except Exception as e:
             print(f"  Failed to process file {file}: {e}")
