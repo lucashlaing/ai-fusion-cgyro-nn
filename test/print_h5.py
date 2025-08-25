@@ -69,7 +69,7 @@ def extract_and_save_h5_data(h5_dir, save_to_csv=True):
             print(f"  Failed to process file {file}: {e}")
 
 def main():
-    h5_dir = "./test_data/train"
+    h5_dir = "./normal_dataset/train/"
     save_to_csv = True
     extract_and_save_h5_data(h5_dir, save_to_csv=save_to_csv)
 

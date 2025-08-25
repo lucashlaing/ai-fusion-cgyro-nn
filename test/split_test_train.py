@@ -3,11 +3,11 @@ import numpy as np
 import os
 
 # Source file
-source_file = './test_data/all_fluxes_data.h5'
+source_file = '../normal_dataset/pool/08_21_25_runs.h5'# './test_data/all_fluxes_data.h5'
 
 # Output file paths
-file_first = './test_data/train/all_fluxes_data_first.h5'
-file_last = './test_data/test/all_fluxes_data_last.h5'
+file_first = '../normal_dataset/pool/08_21_25_runs_first.h5'
+file_last = '../normal_dataset/pool/08_21_25_runs_last.h5'
 
 # Split point (manually set AFTER removing sample 1)
 split_index = 5  # now 5 train, 3 test

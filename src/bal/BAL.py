@@ -77,7 +77,6 @@ class BAL():
         else:
             return x_samples  # (n_samples, 31)
 
-
     def get_prediction(self, input, model):
             """
             Get a list of predictions according to model
@@ -274,7 +273,6 @@ class BAL():
         new_predictions, _ = self.get_prediction(candidates, new_trainer.model)
         return new_predictions
 
-
     def eig(self, candidates, trainer):
         
         # 1. calcuate prior entropy
@@ -338,8 +336,7 @@ class BAL():
 
         sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
         return sorted_scores, sorted_indices
-
-
+    
     def propose_samples(self, trainer):
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
         print("Candidates found")
