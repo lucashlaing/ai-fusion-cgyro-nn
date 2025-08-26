@@ -13,9 +13,10 @@ from .BAL import BAL
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class Offline(BAL):
-    def __init__(self, run_cfg, dataset, pool_dataset):
+    def __init__(self, run_cfg, dataset, pool_dataset, pool_tracker):
         super().__init__(run_cfg, dataset)
         self.pool_dataset = pool_dataset
+        self.pool_tracker = pool_tracker
 
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
@@ -46,6 +47,17 @@ class Offline(BAL):
         # Pick unique random indices
         indices = random.sample(range(dataset_size), n_samples)
 
+        # Filter out already-used datapoints
+        unused_entries = [d for d in dataset_list if not self.pool_tracker.is_used(d[0])]
+
+        if len(unused_entries) < n_samples:
+            raise RuntimeError(
+                f"Not enough unused datapoints left. Requested {n_samples}, "
+                f"but only {len(unused_entries)} available."
+            )
+
+        # Randomly pick indices from the unused set
+        chosen_entries = random.sample(unused_entries, n_samples)
         candidates = []
         for idx in indices:
             input_tensor, _, _, _ = dataset_list[idx]

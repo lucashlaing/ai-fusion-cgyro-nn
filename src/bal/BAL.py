@@ -271,11 +271,19 @@ class BAL():
         for step in range(training_steps):
             data = next(train_looper)
             new_trainer.iter(data)
-            if step % 100 == 0:
+            if step % 2 == 0:
                 print(f"Entropy training step: {step}/{training_steps}")
 
         # Predict on the original candidate inputs
         new_predictions, _ = self.get_prediction(candidates, new_trainer.model)
+
+        # --- Cleanup temporary file ---
+        try:
+            if os.path.exists(temp_h5_path):
+                os.remove(temp_h5_path)
+        except Exception as e:
+            print(f"Warning: could not delete temp file {temp_h5_path}: {e}")
+
         return new_predictions
 
 

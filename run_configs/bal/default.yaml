@@ -12,3 +12,4 @@ with_rho: True
 pool_based: True
 dist_json_path: './src/utils/merged_dist.json'
 has_spectra: True
+iterations: 2
