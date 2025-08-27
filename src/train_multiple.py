@@ -51,6 +51,7 @@ def run_train(cfg):
             wandb.init(
                 project=f"{cfg.project}-train-fixed-op",
                 config=OmegaConf.to_container(cfg, resolve=True),
+                name=f"{time_stamp}_BAL_{i}"
             )
             with open_dict(cfg):
                 cfg.run_id = wandb.run.id
@@ -123,12 +124,10 @@ def run_train(cfg):
             ):
                 with torch.no_grad():
                     # Train loss and error
-                    trainer.print_metrics(train_data, "train")
                     trainer.board_loss(train_data, "train", cfg.board)
 
                     # Test loss and error # NOTE for futian to check
                     test_data = next(test_loopers)
-                    trainer.print_metrics(test_data, "test")
                     trainer.board_loss(test_data, "test", cfg.board)
 
             # Log test error plot
@@ -146,7 +145,6 @@ def run_train(cfg):
 
             # Save checkpoint
             if trainer.train_step % cfg.save_freq == 0:
-                ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"
                 if not os.path.exists(ckpt_dir):
                     os.makedirs(ckpt_dir)
                 print("Current time: " + datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S"))
