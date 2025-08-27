@@ -3,13 +3,7 @@ acquisition_function: eig
 n_samples: 40
 new_sample_size: 10
 entropy_training_steps: 10
-training_cycles: 100
-dataset_status: offline
 model_count: 16
-variance_model: drop_out
-additional_training_epochs: 50
-with_rho: True
-pool_based: True
 dist_json_path: './src/utils/merged_dist.json'
 has_spectra: True
 iterations: 2

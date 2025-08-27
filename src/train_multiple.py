@@ -190,6 +190,7 @@ def run_train(cfg):
         if cfg.board:
             wandb.finish()
 
+    pool_tracker.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/tracker.json")
 
 def find_in_dataset(full_dataset, query_tensor, tol=1e-6):
     """
