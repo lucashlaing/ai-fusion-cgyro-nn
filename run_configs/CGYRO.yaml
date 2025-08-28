@@ -10,14 +10,11 @@ defaults:
 project: CGYRO
 board: False
 plot: False
-experiment: "SR"
 dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth
 base_seed: 42
 dataset_workers: 2
 batch: 1
-restore_dir: "./SR-res"
-restore_step: 100
 epochs: 10
 steps_per_epoch: 1
 loss_freq: 1
@@ -28,10 +25,6 @@ time_warm: 3
 # accumulation is for getting the mean and standard deviation of inputs/targets in model
 # set the steps to cover approximately 1 epoch
 accumulation_steps: 1
-time_stamp: ""
-resume_index: 0
-
-full_eval: False
 
 # only to disable hydra's logging, ignore below
 hydra:  
