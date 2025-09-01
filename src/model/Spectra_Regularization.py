@@ -50,10 +50,9 @@ class Spectra_Regularization_NN(Base):
         return decoded_x
 
     def accumulate(self, data):
-        input, target_flux_per_ky, target_flux, _ = data
+        input, target_flux_per_ky = data
         self._inputNormalizer(input, accumulate=True)
         self._targetNormalizerPerWavenumber(target_flux_per_ky, accumulate=True)
-        self._targetNormalizer(target_flux, accumulate=True)
 
     def forward(self, input):
         # always return the normalized flux per wavenumber

@@ -80,12 +80,14 @@ def run_train(cfg):
             batch_size=cfg.batch,
             num_workers=cfg.dataset_workers,
             pin_memory=True,
+            collate_fn=ragged_collate,
         )
         test_loader = DataLoader(
             test_datapipe,
-            batch_size=10000,
+            batch_size=cfg.batch,
             num_workers=cfg.dataset_workers,
             pin_memory=True,
+            collate_fn=ragged_collate,
         )
 
         # Infinite data loopers for training and testing
@@ -191,6 +193,29 @@ def run_train(cfg):
             wandb.finish()
 
     pool_tracker.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/tracker.json")
+
+def ragged_collate(batch):
+    """
+    Collate function for DataLoader to handle variable nky per sample.
+    
+    batch: list of tuples [(input_0, target_0), (input_1, target_1), ...]
+        input_i: (nky_i, input_dim)
+        target_i: (nky_i, 4)
+    
+    Returns:
+        inputs_cat: torch.Tensor of shape (sum_nky, input_dim)
+        targets_cat: torch.Tensor of shape (sum_nky, 4)
+    """
+    # Extract inputs and targets from batch
+    inputs = [item[0] for item in batch]    # list of tensors (nky_i, input_dim)
+    targets = [item[1] for item in batch]   # list of tensors (nky_i, 4)
+
+    # Concatenate along the first dimension (ky dimension)
+    # This creates a single tensor with all ky points across the batch
+    inputs_cat = torch.cat(inputs, dim=0)   # shape: (sum_nky, input_dim)
+    targets_cat = torch.cat(targets, dim=0) # shape: (sum_nky, 4)
+
+    return inputs_cat, targets_cat
 
 def find_in_dataset(full_dataset, query_tensor, tol=1e-6):
     """
