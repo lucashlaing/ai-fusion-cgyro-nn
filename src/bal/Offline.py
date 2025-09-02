@@ -44,9 +44,6 @@ class Offline(BAL):
                 f"Requested {n_samples} samples, but dataset only has {dataset_size} unique entries."
             )
 
-        # Pick unique random indices
-        indices = random.sample(range(dataset_size), n_samples)
-
         # Filter out already-used datapoints
         unused_entries = [d for d in dataset_list if not self.pool_tracker.is_used(d[0])]
 
@@ -59,8 +56,8 @@ class Offline(BAL):
         # Randomly pick indices from the unused set
         chosen_entries = random.sample(unused_entries, n_samples)
         candidates = []
-        for idx in indices:
-            input_tensor, _ = dataset_list[idx]
+        for input_tensor, _ in chosen_entries:
             candidates.append(input_tensor)
 
-        return torch.stack(candidates, dim=0)
+        # appends them rather than stack it
+        return torch.cat(candidates, dim=0) # Shape: (n * ky, 32)
