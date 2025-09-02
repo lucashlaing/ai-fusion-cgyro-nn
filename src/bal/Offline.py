@@ -60,18 +60,7 @@ class Offline(BAL):
         chosen_entries = random.sample(unused_entries, n_samples)
         candidates = []
         for idx in indices:
-            input_tensor, _, _, _ = dataset_list[idx]
-
-            if self.has_spectra:
-                # Expect shape (24, 32)
-                if input_tensor.shape != (24, 32):
-                    raise ValueError(f"Expected (24,32) input, got {input_tensor.shape}")
-                candidates.append(input_tensor)
-            else:
-                # Flatten into (31,)
-                flat = input_tensor.flatten()
-                if flat.shape[-1] != 31:
-                    raise ValueError(f"Expected 31 features, got {flat.shape}")
-                candidates.append(flat)
+            input_tensor, _ = dataset_list[idx]
+            candidates.append(input_tensor)
 
         return torch.stack(candidates, dim=0)

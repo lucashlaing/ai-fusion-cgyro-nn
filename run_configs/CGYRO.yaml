@@ -14,7 +14,7 @@ dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth
 base_seed: 42
 dataset_workers: 2
-batch: 1
+batch: 2
 epochs: 10
 steps_per_epoch: 1
 loss_freq: 1

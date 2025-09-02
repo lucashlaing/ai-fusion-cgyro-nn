@@ -25,27 +25,25 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         self.apply_asinh_accumulate = model_cfg.apply_asinh_accumulate
         # do we calculate mse loss in normalized or inv_normalized space
         self.normalize_mse_loss = model_cfg.normalize_mse_loss
-        self.loss_names = ["loss", "flux_per_ky_loss", "flux_loss"]
 
     def get_input_target(self, data):
         # input, flux_per_ky, flux
         input = data[0]
-        gt_flux_per_ky = data[1]
-        gt_flux = data[2]
-        return input, gt_flux_per_ky, gt_flux
+        output_per_ky = data[1]
+        return input, output_per_ky
 
     def accumulate(self, data):
         data = self.move_to_device(data)
         if self.apply_asinh_accumulate:
             # apply asinh to the fluxes
-            input, target_flux_per_ky, target_flux = self.get_input_target(data)
-            data_trans = (input, torch.asinh(target_flux_per_ky), torch.asinh(target_flux))
+            input, target_flux_per_ky = self.get_input_target(data)
+            data_trans = (input, torch.asinh(target_flux_per_ky))
             self.model.accumulate(data_trans)
         else:
             self.model.accumulate(data)
 
     def _model_forward(self, data):
-        input, _, _ = self.get_input_target(data)
+        input, _ = self.get_input_target(data)
         normalized_pred_per_ky = self.model(input)
         return normalized_pred_per_ky
 
@@ -56,61 +54,27 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # if accumulated asinh, then we need to transform it back to real space using sinh
         if self.apply_asinh_accumulate:
             pred_flux_per_ky = torch.sinh(pred_flux_per_ky)
-        # get pred_flux
-        pred_flux = torch.sum(pred_flux_per_ky, dim=1)
 
-        return pred_flux_per_ky, pred_flux
-
-    def get_mask(self, data):
-        mask = data[3]
-        return mask
+        return pred_flux_per_ky
 
     def _loss_fn(self, data):
         # get pred fluxes, always in real
-        pred_flux_per_ky, pred_flux = self.get_pred(data)
+        pred_flux_per_ky = self.get_pred(data)
         # get gt fluxes, aways in real
-        _, gt_flux_per_ky, gt_flux = self.get_input_target(data)
-        mask = self.get_mask(data)
-        mask_expanded = (mask == 0).unsqueeze(-1)   # 0 means flux is good
-        mask_expanded = mask_expanded.expand(-1, -1, 4)  # [batch, nky, 4]
+        _, gt_flux_per_ky = self.get_input_target(data)
 
         # transform fluxes accordigly, asinh is must, then normalize if needed
         gt_flux_per_ky_trans = torch.asinh(gt_flux_per_ky)
-        gt_flux_trans = torch.asinh(gt_flux)
         pred_flux_per_ky_trans = torch.asinh(pred_flux_per_ky)
-        pred_flux_trans = torch.asinh(pred_flux)
         if self.normalize_mse_loss:
             gt_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(gt_flux_per_ky_trans, accumulate=False)
-            gt_flux_trans = self.model._targetNormalizer(gt_flux_trans, accumulate=False)
             pred_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(pred_flux_per_ky_trans, accumulate=False)
-            pred_flux_trans = self.model._targetNormalizer(pred_flux_trans, accumulate=False)
-
-        if self.random_loss:
-            target_log10_max = gt_flux.new_tensor(list(self.dataset_cfg.target_log10_max))
-            target_log10_min = gt_flux.new_tensor(list(self.dataset_cfg.target_log10_min))
-            flux_loss = asinh_ratio_loss(
-                gt_flux, pred_flux, target_log10_max, target_log10_min, tc_rng=self.tc_rng
-            )
-        else:
-            flux_loss = mean_squared_loss(gt_flux_trans, pred_flux_trans)
-
-        # Filter only the masked kys
-        gt_selected = gt_flux_per_ky_trans[mask_expanded]      # (num_selected,)
-        pred_selected = pred_flux_per_ky_trans[mask_expanded]  # (num_selected,)
-
-        # debugging in case of equal fluxes (should never happen)
-        if torch.equal(gt_selected, pred_selected):
-            print("Tensors are exactly the same!")
-            print("Values:\n", gt_selected)
-            print(mask_expanded)
         
         # Compute loss only on those kys
-        flux_per_ky_loss = mean_squared_loss(gt_selected, pred_selected)
+        flux_per_ky_loss = mean_squared_loss(gt_flux_per_ky_trans, pred_flux_per_ky_trans)
 
-        w_target = self.model_cfg.w_target
-        w_spectra = self.model_cfg.w_spectra
-        loss = flux_per_ky_loss # altered to only train on the per ky loss
-        return loss, flux_per_ky_loss, flux_loss
+        # altered to only train on the per ky loss
+        return flux_per_ky_loss
     
     def iter(self, data, return_loss=False):
         # === Check data before moving to device ===
@@ -125,7 +89,7 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         data = self.move_to_device(data)
 
         # Compute loss
-        loss, _, _ = self._loss_fn(data)
+        loss = self._loss_fn(data)
 
         # === Check loss before backward ===
         if torch.isnan(loss).any() or torch.isinf(loss).any():
@@ -175,14 +139,15 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # move to device
         data = self.move_to_device(data)
         # get pred fluxes, always in real
-        _, pred_flux = self.get_pred(data)
+        pred_flux_per_ky = self.get_pred(data)
         # get gt fluxes, aways in real
-        _, _, gt_flux = self.get_input_target(data)
+        _, gt_flux_per_ky = self.get_input_target(data)
 
-        sigma = log_10sigma(gt_flux, pred_flux)
-        R_sq = r_squared(gt_flux, pred_flux)
-        MRE = 100 * mean_relative_error(gt_flux, pred_flux)  # in percentage
-        MSLE = mean_squared_logarithmic_error(gt_flux, pred_flux)
+
+        sigma = log_10sigma(gt_flux_per_ky, pred_flux_per_ky)
+        R_sq = r_squared(gt_flux_per_ky, pred_flux_per_ky)
+        MRE = 100 * mean_relative_error(gt_flux_per_ky, pred_flux_per_ky)  # in percentage
+        MSLE = mean_squared_logarithmic_error(gt_flux_per_ky, pred_flux_per_ky)
 
         # Convert metrics to numpy arrays
         R_sq = R_sq.cpu().detach().numpy()
@@ -228,9 +193,9 @@ class Spectra_Regularization_Trainer(Base_Trainer):
             board: Boolean flag for logging to Weights & Biases (wandb).
         """
         # get pred fluxes, always in real
-        _, pred_flux = self.get_pred(data)
+        pred_flux = self.get_pred(data)
         # get gt fluxes, aways in real
-        _, _, gt_flux = self.get_input_target(data)
+        gt_flux = self.get_input_target(data)
 
         pred = pred_flux.cpu().detach().numpy()
         target = gt_flux.cpu().detach().numpy()

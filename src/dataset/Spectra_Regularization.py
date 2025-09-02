@@ -57,11 +57,9 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
 
         input_data_expanded = np.repeat(input_data[:, np.newaxis, :], spectra_function_data.shape[1], axis=1)
         spectra_function_data_expanded = spectra_function_data[:, :, np.newaxis]
+        
+        combined_matrix = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2) # (size, nky, 32)
 
-        combined_matrix = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2)
-
-        input = torch.tensor(combined_matrix, dtype=torch.float32)
-        target_flux = torch.tensor(np.stack(target_list, axis=1), dtype=torch.float32)
         flux_per_spicies_per_ky = torch.tensor(intermediate_target_list[0], dtype=torch.float32)
 
         # the sumf_tensor is of shape (size, nky, ns, 5)
@@ -70,14 +68,23 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
         Q_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 1]  # (size,nky,)
         Q_ions_per_ky = torch.sum(flux_per_spicies_per_ky[:, :, 1:, 1], dim=-1)  # (size,nky,)
         P_ions_per_ky = torch.sum(flux_per_spicies_per_ky[:, :, 1:, 2], dim=-1)  # (size,nky,)
-        # cat them tobe (size, nky, 4)
-        target_flux_per_ky = torch.stack((G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1)
+        # cat them to be (size, nky, 4)
+        target_flux_per_ky = torch.stack((G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1) # (size, nky, 4)
 
-        failed_mask_tensor = torch.tensor(failed_mask, dtype=torch.float32)
+        input_samples = [] # will be a list of tensors rather than a 3D tensor due to pytorch constraints of diff shapes
+        target_samples = [] # same as above
 
-        return (input, target_flux_per_ky, target_flux, failed_mask_tensor), input.shape[0]
+        for i in range(combined_matrix.shape[0]):
+            mask = failed_mask[i] == 0   # True for 0 and False otherwise
+
+            # combined_matrix[i] has shape (nky, 32)
+            # mask grabs out only the True values to give it shape (good_ky, 32)
+            input_samples.append(torch.from_numpy(combined_matrix[i][mask]).float()) # (good_ky, 32)
+            target_samples.append(target_flux_per_ky[i][mask].detach().clone()) # (good_ky, 4)
+
+        return (input_samples, target_samples), len(input_samples)
 
     def _get_slice(self, data, index):
-        input_tensor, target_tensor, sumf_tensor, failed_mask_tensor = data
-        return input_tensor[index], target_tensor[index], sumf_tensor[index], failed_mask_tensor[index]
+        input_tensor, target_tensor= data
+        return input_tensor[index], target_tensor[index]
 
