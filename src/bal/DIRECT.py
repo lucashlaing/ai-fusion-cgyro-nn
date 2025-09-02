@@ -8,14 +8,15 @@ from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
 from BAL import BAL
+from Offline import Offline
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class DIRECT(BAL):
-    def __init__(self, run_cfg, dataset):
-        super().__init__(run_cfg, dataset)
+class DIRECT(Offline):
+    def __init__(self, run_cfg, dataset, pool_dataset, pool_tracker):
+        super().__init__(run_cfg, dataset, pool_dataset, pool_tracker)
 
-    def log_ratio(self, candidates, tglf_out, cgyro_out, num_classes):
+    def log_mse(self, candidates, tglf_out, cgyro_out, num_classes):
         """
         Classifies inputs based on log ratio of TGLF to CGYRO outputs corresponding to that input.
 
@@ -111,6 +112,10 @@ class DIRECT(BAL):
         return max_j
     
     def direct(self, train_data, candidates, cgyro_trainer, tglf_trainer, num_classes, B_train, B_parallel, classify_func, **kwargs):
+        """
+        Expected train_data shape: (N_ky_samples, 32)
+        Expected candidate shape: (N_candidates, 32)
+        """
         train_inputs, train_labels = train_data
 
         all_inputs = torch.concatenate([train_inputs, candidates], dim=0)
