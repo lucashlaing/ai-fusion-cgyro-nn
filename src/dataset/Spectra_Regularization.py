@@ -18,7 +18,6 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
 
         # creating lists to put the values
         input_list = []
-        target_list = []
         spectra_list = []
         intermediate_target_list = []
 
@@ -26,8 +25,6 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
             for key in input_keys:
                 # Each of shape (N,)
                 input_list.append(np.array(f[key]))
-            for key in target_keys:
-                target_list.append(np.array(f[key]))
             for key in spectra_function_keys:
                 spectra_list.append(np.array(f[key]))
             for key in intermediate_target_keys:
