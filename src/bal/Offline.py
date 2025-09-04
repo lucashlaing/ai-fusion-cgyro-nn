@@ -1,3 +1,6 @@
+import sys
+sys.path.append('../')
+
 import torch
 import random
 import json
@@ -8,7 +11,8 @@ import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
-from .BAL import BAL
+from BAL import BAL
+
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
