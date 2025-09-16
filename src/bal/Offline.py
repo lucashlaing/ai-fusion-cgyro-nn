@@ -11,6 +11,7 @@ import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+sys.path.append('./src/bal/')
 from BAL import BAL
 
 
@@ -35,10 +36,6 @@ class Offline(BAL):
                 - Shape (n_samples, 31) if self.has_spectra=False
                 - Shape (n_samples, 24, 32) if self.has_spectra=True
         """
-        # the offline version uses pool-based data grabbing
-        # currently it is broken in terms of where its grabbing data from
-        
-
         # Materialize dataset into a list since it's iterable
         dataset_list = list(self.pool_dataset)  
         dataset_size = len(dataset_list)
@@ -51,6 +48,8 @@ class Offline(BAL):
         # Filter out already-used datapoints
         unused_entries = [d for d in dataset_list if not self.pool_tracker.is_used(d[0])]
 
+        print(f'Remaining pool size: {len(unused_entries)}')
+        
         if len(unused_entries) < n_samples:
             raise RuntimeError(
                 f"Not enough unused datapoints left. Requested {n_samples}, "

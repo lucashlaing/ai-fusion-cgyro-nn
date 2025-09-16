@@ -160,6 +160,7 @@ class BaseDataPipe(IterableDataset):
             self.rng.shuffle(worker_paths)
 
         for file_path in worker_paths:
+            print(f'Reading data at: {file_path}')
             data, length = self._read_path(file_path)
             b_ids = np.arange(length)
 

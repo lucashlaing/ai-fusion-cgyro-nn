@@ -92,7 +92,7 @@ def run_train(cfg):
 
         # Infinite data loopers for training and testing
         train_loopers = InfiniteDataLooper(train_loader)
-        test_loopers = InfiniteDataLooper(test_loader)
+        test_loopers = InfiniteDataLooper(train_loader) #changed to train_loader for sanity check
 
         # Accumulate channel mean and std for model
         print("Accumulating channel mean and std for model...")
@@ -132,14 +132,8 @@ def run_train(cfg):
                     test_data = next(test_loopers)
                     trainer.board_loss(test_data, "test", cfg.board)
 
-            # Log test error plot
-            if cfg.plot and (
-                (trainer.train_step % cfg.plot_freq == 0)
-                or (trainer.train_step % (cfg.plot_freq // 10) == 0 and trainer.train_step <= cfg.plot_freq)
-                or (trainer.train_step % (cfg.plot_freq // 10) == 0 and trainer.train_step >= total_steps - cfg.plot_freq)
-            ):
-                with torch.no_grad():
-                    test_data = next(test_loopers)
+                    print(f'Plotting losses')
+                    print(f'Test Loss: {trainer.get_test_loss(test_loader)}')
                     plot_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/png/"
                     if not os.path.exists(plot_dir):
                         os.makedirs(plot_dir)
@@ -177,17 +171,19 @@ def run_train(cfg):
         train_dir = os.path.join(cfg.dataset.dataset_root, "train")
         new_samples_full = []
         full_dataset_list = list(full_dataset)  
+        print(f'Pool size: {len(full_dataset_list)}')
         for sample in new_samples:
             idx, full_sample = find_in_dataset(full_dataset_list, sample)
             if idx is not None:
+                print(f'Saved new sample')
+                # mark the new candidates as used from our pool
+                found_input = full_sample[0]
+                pool_tracker.mark_used(found_input)
                 new_samples_full.append(full_sample)
-
+            else:
+                print(f'Query could not be matched in pool')
+        
         save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
-
-
-        # then we also mark the new candidates as used from our pool
-        for c in new_samples:
-            pool_tracker.mark_used(c[0])
 
         if cfg.board:
             wandb.finish()
@@ -217,7 +213,7 @@ def ragged_collate(batch):
 
     return inputs_cat, targets_cat
 
-def find_in_dataset(full_dataset, query_tensor, tol=1e-6):
+def find_in_dataset(full_dataset, query_tensor, tol=1e-0):
     """
     Find the index and full sample in the dataset that matches the given query tensor.
 
@@ -235,10 +231,20 @@ def find_in_dataset(full_dataset, query_tensor, tol=1e-6):
     (int, tuple) or (None, None)
         The index and the full dataset sample, or (None, None) if not found.
     """
+
     for idx in range(len(full_dataset)):
-        input_data, target_flux_per_ky, target_flux, failed_mask = full_dataset[idx]
-        if torch.allclose(input_data, query_tensor, atol=tol, rtol=0):
-            return idx, (input_data, target_flux_per_ky, target_flux, failed_mask)
+        # Deprecated format:
+        # input_data, target_flux_per_ky, target_flux, failed_mask = full_dataset[idx]
+
+        # Format for ky-specific samples (not 24 ky per sample)
+        input_data, target_flux_per_ky = full_dataset[idx] 
+        input_tensor = input_data[0,:] #input_data shape = (nky, 32), s.t. all entries should be the same in dim=1
+        if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
+            if torch.isnan(input_tensor).any(axis=0) or torch.isnan(query_tensor).any(axis=0):
+                print('Found NaN in acquired input tensor')
+            # print(f'Query tensor: {query_tensor}')
+            # print(f'Input tensor: {input_tensor}')
+            return idx, (input_data, target_flux_per_ky)
     return None, None
 
 import h5py
@@ -269,19 +275,32 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
     flux_per_ky = []
     masks = []
 
-    for inp, t_flux_per_ky, t_flux, mask in new_samples_full:
+    for inp, t_flux_per_ky in new_samples_full:
         # Each inp shape: (nky, features) — includes input features + ky values
-        inputs.append(inp.cpu().numpy())
-        targets.append(t_flux.cpu().numpy())
-        flux_per_ky.append(t_flux_per_ky.cpu().numpy())
-        masks.append(mask.cpu().numpy())
+        input = inp.cpu().numpy()
+        if input.shape[0] != 24:
+            continue
+        inputs.append(input)
 
-    inputs = np.array(inputs)        # (n_samples, nky, n_features)
-    targets = np.array(targets)      # (n_samples, n_targets)
+        mask = input[:,-1] == 0
+        masks.append(mask)
+
+        t_flux_per_ky = t_flux_per_ky.cpu().numpy()
+        flux_per_ky.append(t_flux_per_ky)
+
+    inputs = np.array(inputs)       # (n_samples, nky, n_features)
     flux_per_ky = np.array(flux_per_ky)  # (n_samples, nky, 4)
     masks = np.array(masks)          # (n_samples, nky)
 
     n_samples, nky, n_features = inputs.shape
+
+    # Flux target keys
+    target_keys = [
+        "OUT_G_elec",   # fluxes[:, 0]
+        "OUT_Q_elec",   # fluxes[:, 1]
+        "OUT_Q_ions",   # fluxes[:, 2]
+        "OUT_P_ions",   # fluxes[:, 3]
+    ]
 
     with h5py.File(save_path, "w") as f:
         # Split input features (everything except last column = ky)
@@ -296,10 +315,6 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
         for i, key in enumerate(dataset_cfg.spectra_function_keys):
             if key == "ky":
                 f.create_dataset(key, data=ky_values)
-
-        # Save targets
-        for i, key in enumerate(dataset_cfg.target_keys):
-            f.create_dataset(key, data=targets[:, i])
 
         # Save intermediate target (reconstruct sumf-like tensor)
         if len(dataset_cfg.intermediate_target_keys) > 0:
@@ -333,9 +348,13 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
         total_count_arr = np.full((n_samples,), nky, dtype=np.int32)
         meta_grp.create_dataset("total_count", data=total_count_arr)
 
-    print(f"Saved {n_samples} new samples to {save_path}")
+        for key in f.keys():
+            if key == "fluxes":
+                flux_arr = f["fluxes"][:]
+                # Split into separate 1D arrays
+                for i, name in enumerate(target_keys):
+                    f.create_dataset(name, data=flux_arr[:, i])
     return save_path
-
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):
@@ -348,7 +367,6 @@ def main(cfg: DictConfig):
         Configuration object containing training parameters.
     """
     run_train(cfg)
-
 
 if __name__ == "__main__":
     main()

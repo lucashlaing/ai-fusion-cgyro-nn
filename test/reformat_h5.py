@@ -2,8 +2,8 @@ import h5py
 import numpy as np
 
 # Input and output files
-source_file = "./test_data/pool/200_initial.h5"
-output_file = "./test_data/pool/200_initial_reformatted.h5"
+source_file = "./normal_dataset/train/BAL_0_new.h5"
+output_file = "./normal_dataset/train/BAL_0_new_reformatted.h5"
 
 # Flux target keys
 target_keys = [

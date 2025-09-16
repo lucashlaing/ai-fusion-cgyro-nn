@@ -6,4 +6,4 @@ entropy_training_steps: 10
 model_count: 16
 dist_json_path: './src/utils/merged_dist.json'
 has_spectra: True
-iterations: 2
+iterations: 100

@@ -19,12 +19,12 @@ epochs: 10
 steps_per_epoch: 1
 loss_freq: 1
 save_freq: 1
-plot_freq: 10
+plot_freq: 5
 time_freq: 350
 time_warm: 3
 # accumulation is for getting the mean and standard deviation of inputs/targets in model
 # set the steps to cover approximately 1 epoch
-accumulation_steps: 1
+accumulation_steps: 10
 
 # only to disable hydra's logging, ignore below
 hydra:  

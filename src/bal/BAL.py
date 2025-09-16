@@ -458,25 +458,23 @@ class BAL():
         
         # Convert to numpy
         candidates_np = candidates.cpu().numpy()
-        
-        # print(f"DEBUG: Input candidates shape: {candidates_np.shape}")
-        
+
         if self.has_spectra:
-            # candidates shape: (k, 24, 32)
+            # DEPRECATED candidates shape: (k, 24, 32)
+            # ---------------------------------------
+            # UPDATED candidates shape: (k, 32)
             # Extract input features (first 31 features) from any ky slice since they're repeated
-            if len(candidates_np.shape) == 3 and candidates_np.shape[2] == 32:
+            if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 32:
                 # Take the first ky slice and remove the last column (ky values)
-                top_k_features = candidates_np[:, 0, :-1]  # (k, 31)
-                # print(f"DEBUG: Extracted features from spectra format: {top_k_features.shape}")
+                top_k_features = candidates_np[:, :-1]  # (k, 31)
             else:
-                raise ValueError(f"Expected candidates shape (k, 24, 32) for spectra, got {candidates_np.shape}")
+                raise ValueError(f"Expected candidates shape (k, 32) for spectra, got {candidates_np.shape}")
         else:
             # candidates shape: (k, 31)
             if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 31:
                 top_k_features = candidates_np  # Already in correct format
-                # print(f"DEBUG: Using candidates directly (no spectra): {top_k_features.shape}")
             else:
-                raise ValueError(f"Expected candidates shape (k, 31) for non-spectra, got {candidates_np.shape}")
+                raise ValueError(f"Expected candidates shape (k, 32) for non-spectra, got {candidates_np.shape}")
         
         # Validate final shape
         if top_k_features.shape[1] != 31:
@@ -487,8 +485,5 @@ class BAL():
         
         # Save as .npy file
         np.save(full_path, top_k_features)
-        
-        # print(f"DEBUG: Saved top-{top_k_features.shape[0]} candidates to: {full_path}")
-        # print(f"DEBUG: Final saved shape: {top_k_features.shape}")
         
         return full_path

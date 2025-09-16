@@ -125,15 +125,18 @@ class Spectra_Regularization_Trainer(Base_Trainer):
             dataloader: The data loader to get data.
         """
         losses = []
-
+        import math
+        nans = 0
         for data in dataloader:
             data = self.move_to_device(data)
-
             # For calculate losses
             loss = self.get_loss(data)
+            if loss == None or math.isnan(loss):
+                nans += 1
+                continue
 
-            losses.append(loss[0])
-        return sum(losses) / len(losses)
+            losses.append(loss)
+        return sum(losses) / (len(losses) - nans)
 
     def get_metrics(self, data):
         # move to device
@@ -195,10 +198,10 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # get pred fluxes, always in real
         pred_flux = self.get_pred(data)
         # get gt fluxes, aways in real
-        gt_flux = self.get_input_target(data)
+        _, gt_flux_per_ky = self.get_input_target(data)
 
         pred = pred_flux.cpu().detach().numpy()
-        target = gt_flux.cpu().detach().numpy()
+        target = gt_flux_per_ky.cpu().detach().numpy()
 
         self.plot_data(pred, target)
 
