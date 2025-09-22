@@ -1,4 +1,4 @@
-peak_lr: 5e-6                   # lower to be safe on small data
+peak_lr: 5e-6                  # lower to be safe on small data
 end_lr: 1e-7
 warmup_steps: 0                # no warmup needed
 decay_steps: 40                # total steps = 2 * 20 = 40

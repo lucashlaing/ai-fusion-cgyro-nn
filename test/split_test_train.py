@@ -3,14 +3,14 @@ import numpy as np
 import os
 
 # Source file
-source_file = '../normal_dataset/pool/08_21_25_runs.h5'# './test_data/all_fluxes_data.h5'
+source_file = '../normal_dataset/pool/200_initial_reformatted.h5'# './test_data/all_fluxes_data.h5'
 
 # Output file paths
-file_first = '../normal_dataset/pool/08_21_25_runs_first.h5'
-file_last = '../normal_dataset/pool/08_21_25_runs_last.h5'
+file_first = '../normal_dataset/pool/200_initial_reformatted_80.h5'
+file_last = '../normal_dataset/pool/200_initial_reformatted_20.h5'
 
 # Split point (manually set AFTER removing sample 1)
-split_index = 5  # now 5 train, 3 test
+split_index = 80  # now 5 train, 3 test
 
 # Keys to extract from fluxes
 target_keys = [
@@ -20,7 +20,7 @@ target_keys = [
     "OUT_P_ions",   # fluxes[:, 3]
 ]
 
-remove_index = 1  # hardcoded: the flawed sample
+# remove_index = 1  # hardcoded: the flawed sample
 
 with h5py.File(source_file, 'r') as f:
     keys = list(f.keys())
@@ -28,17 +28,13 @@ with h5py.File(source_file, 'r') as f:
     # Read and unpack all data
     data = {}
     for key in keys:
-        if key == 'fluxes':
-            flux_arr = np.delete(f['fluxes'][:], remove_index, axis=0)
-            for i, name in enumerate(target_keys):
-                data[name] = flux_arr[:, i]
-        elif isinstance(f[key], h5py.Dataset):
-            arr = np.delete(f[key][:], remove_index, axis=0) if f[key].shape[0] == f['fluxes'].shape[0] else f[key][:]
+        if isinstance(f[key], h5py.Dataset):
+            arr = f[key][:]
             data[key] = arr
         elif isinstance(f[key], h5py.Group):
             group_data = {}
             for k in f[key].keys():
-                arr = np.delete(f[key][k][:], remove_index, axis=0) if f[key][k].shape[0] == f['fluxes'].shape[0] else f[key][k][:]
+                arr = f[key][k][:]
                 group_data[k] = arr
             data[key] = group_data
 
@@ -62,4 +58,4 @@ with h5py.File(source_file, 'r') as f:
                 else:
                     out.create_dataset(key, data=data[key])  # sample-independent data
 
-print(f"✅ Files saved, removed sample {remove_index}, and split at index {split_index}.")
+print(f"✅ Files saved, split at index {split_index}.")

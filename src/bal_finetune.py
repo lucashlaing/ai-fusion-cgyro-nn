@@ -21,7 +21,6 @@ from tqdm import tqdm
 
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 
-
 def run_train(cfg):
     """
     Run the training loop.
@@ -45,9 +44,34 @@ def run_train(cfg):
     full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
     pool_tracker = UsageTracker()
 
-    test_losses = np.zeros(shape=(cfg.bal.iterations))
+    # Number of iterations to train / run BAL
+    # For the first iteration, do not train (no acquired data), only compute test loss and run BAL
+    # For the last iteration, train but do not run further BAL
+    num_iter = cfg.bal.iterations + 2
 
-    for i in range(cfg.bal.iterations):
+    test_losses = np.zeros(shape=(num_iter))
+    num_acquired_samples = np.zeros(shape=(num_iter))
+
+    # Load model for freezing and comparison
+    baseModel = MODEL_HANDLER["SR"](cfg.model)
+    checkpoint_path = cfg.checkpoint_path
+    load_prev_model(baseModel, checkpoint_path)
+    
+    # Trainer creation
+    base_trainer = TRAINER_HANDLER[project_name](baseModel, cfg.model, cfg.opt, cfg.dataset, tc_rng)
+    
+    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    test_loader = DataLoader(
+            test_datapipe,
+            batch_size=cfg.batch,
+            num_workers=cfg.dataset_workers,
+            pin_memory=True,
+            collate_fn=ragged_collate,
+        )
+    test_loopers = InfiniteDataLooper(test_loader)
+
+    # Retrains model from baseline after each BAL iteration 
+    for i in range(num_iter):
 
         # LUCAS KEY .... CHANGE TO ZACH
         if cfg.board:
@@ -62,24 +86,11 @@ def run_train(cfg):
                 cfg.entity = wandb.run.entity
                 cfg.full_project_name = wandb.run.project
 
-        # Model and dataset creation
-
-        ## DEPRECATED: For residual model approach
-        ## NOTE: Check model difference references, ensure finetuning happening as expected
-        # if(project_name == "CGYRO"):
-        #     baseModel = MODEL_HANDLER["SR"](cfg.model)
-        #     checkpoint_path = cfg.checkpoint_path
-        #     load_prev_model(baseModel, checkpoint_path)
-        #     print("Lower Fidelity Model Loaded Successful")
-        #     model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
-        # else:
-
+        # Load model for finetuning
         model =  MODEL_HANDLER["SR"](cfg.model)
-        checkpoint_path = cfg.checkpoint_path
         load_prev_model(model, checkpoint_path)
         
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-        test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
 
         # Trainer creation
         trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
@@ -92,26 +103,11 @@ def run_train(cfg):
             pin_memory=True,
             collate_fn=ragged_collate,
         )
-        test_loader = DataLoader(
-            test_datapipe,
-            batch_size=cfg.batch,
-            num_workers=cfg.dataset_workers,
-            pin_memory=True,
-            collate_fn=ragged_collate,
-        )
+
 
         # Infinite data loopers for training and testing
         train_loopers = InfiniteDataLooper(train_loader)
-        test_loopers = InfiniteDataLooper(train_loader) #changed to train_loader for sanity check
 
-        print(f'Model State Dict: {model.state_dict()}')
-        print(f'Loaded Normalizer Num Accum: {model._targetNormalizerPerWavenumber._num_accumulations}')
-        # Accumulate channel mean and std for model
-        # print("Accumulating channel mean and std for model...")
-        # for _ in tqdm(range(cfg.accumulation_steps)):
-        #     data = next(train_loopers)
-        #     trainer.accumulate(data)
-        # print("Accumulation done. The stats are:")
         if hasattr(trainer.model, "module"):
             trainer.model.module.report_stats()
         else:
@@ -128,6 +124,9 @@ def run_train(cfg):
 
         print("Training starts...")
         for _ in tqdm(range(total_steps + 1)):
+            # If first BAL iteration, compute test loss and get new samples before training
+            if i == 0:
+                break
             train_data = next(train_loopers)
 
             # Log loss
@@ -160,17 +159,22 @@ def run_train(cfg):
             if trainer.train_step > 0 and (trainer.train_step % cfg.time_freq == 0):
                 ratio = (trainer.train_step - cfg.time_warm) / total_steps
                 timer.estimate_time("time estimate", ratio)
-
-        # training model is done
-        # BAL start
         print("Training Done")
 
         # Plot / log losses
         test_losses[i] = trainer.get_test_loss(test_loader)
+        base_loss = base_trainer.get_test_loss(test_loader)
         print(f'Test Loss: {test_losses[i]}')
+        print(f'Base Model Test Loss: {base_loss}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
 
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        
+        # Last iteration (or pool empty), do not run BAL, only train
+        if i == num_iter - 1 or bal.is_pool_empty():
+            if cfg.board:
+                wandb.finish()
+            break
 
         if cfg.bal.acquisition_function == 'eig':
             print(f'BAL: EIG Sampling')
@@ -182,8 +186,7 @@ def run_train(cfg):
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 
-        # here we add the new candidates to our train folder
-
+        # Add the new candidates to our train folder
         train_dir = os.path.join(cfg.dataset.dataset_root, "train")
         new_samples_full = []
         full_dataset_list = list(full_dataset)  
@@ -192,14 +195,21 @@ def run_train(cfg):
             sample = new_samples[j,:]
             idx, full_sample = find_in_dataset(full_dataset_list, sample)
             if idx is not None:
-                print(f'Saved new sample')
                 # mark the new candidates as used from our pool
                 found_input = full_sample[0]
+                if pool_tracker.is_used(found_input):
+                    print(f'Warning: acquired duplicate candidates')
+                    continue
                 pool_tracker.mark_used(found_input)
                 new_samples_full.append(full_sample)
+                print(f'Saved new sample')
             else:
                 print(f'Query could not be matched in pool')
-        
+
+        num_acq = len(new_samples_full)
+        num_acquired_samples[i] = num_acq
+        print(f'Number of acquired samples: {num_acq}')
+        np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
         save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
         if cfg.board:
@@ -230,7 +240,7 @@ def ragged_collate(batch):
 
     return inputs_cat, targets_cat
 
-def find_in_dataset(full_dataset, query_tensor, tol=1e-0):
+def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
     """
     Find the index and full sample in the dataset that matches the given query tensor.
 
@@ -248,20 +258,21 @@ def find_in_dataset(full_dataset, query_tensor, tol=1e-0):
     (int, tuple) or (None, None)
         The index and the full dataset sample, or (None, None) if not found.
     """
-
     for idx in range(len(full_dataset)):
         # Deprecated format:
         # input_data, target_flux_per_ky, target_flux, failed_mask = full_dataset[idx]
 
         # Format for ky-specific samples (not 24 ky per sample)
         input_data, target_flux_per_ky = full_dataset[idx] 
-        input_tensor = input_data[0,:] #input_data shape = (nky, 32), s.t. all entries should be the same in dim=1
-        if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
-            if torch.isnan(input_tensor).any(axis=0) or torch.isnan(query_tensor).any(axis=0):
-                print('Found NaN in acquired input tensor')
-            # print(f'Query tensor: {query_tensor}')
-            # print(f'Input tensor: {input_tensor}')
-            return idx, (input_data, target_flux_per_ky)
+        for j in range(input_data.shape[0]):
+            input_tensor = input_data[j] # input_data shape = (nky, 32)
+            # if np.isclose(input_tensor[-1].detach().cpu().numpy(), 0):
+            #     # Rest of ky will be zero, do not take this candidate as it has been requested for a failed ky loc
+            #     break
+            if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
+                if torch.isnan(input_tensor).any(axis=0) or torch.isnan(query_tensor).any(axis=0):
+                    print('Warning: found NaN in acquired input tensor')
+                return idx, (input_data[j], target_flux_per_ky[j])
     return None, None
 
 import h5py
@@ -295,19 +306,22 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
     for inp, t_flux_per_ky in new_samples_full:
         # Each inp shape: (nky, features) — includes input features + ky values
         input = inp.cpu().numpy()
-        if input.shape[0] != 24:
-            continue
         inputs.append(input)
 
-        mask = input[:,-1] == 0
+        mask = input[-1] == 0
         masks.append(mask)
 
         t_flux_per_ky = t_flux_per_ky.cpu().numpy()
         flux_per_ky.append(t_flux_per_ky)
 
-    inputs = np.array(inputs)       # (n_samples, nky, n_features)
-    flux_per_ky = np.array(flux_per_ky)  # (n_samples, nky, 4)
-    masks = np.array(masks)          # (n_samples, nky)
+    inputs = np.array(inputs)       # (n_samples, n_features)
+    flux_per_ky = np.array(flux_per_ky)  # (n_samples, 4)
+    masks = np.array(masks)          # (n_samples)
+
+    # Unsqueeze dim=1 for nky=1
+    inputs = inputs[:, np.newaxis, :] # (n_samples, nky, n_features)
+    flux_per_ky = flux_per_ky[:, np.newaxis, :] # (n_samples, nky, 4)
+    masks = masks[:, np.newaxis] # (n_samples, nky)
 
     n_samples, nky, n_features = inputs.shape
 
@@ -339,7 +353,7 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
             ns = 3  # electrons + 2 ions
             nf = 2  # fields
 
-            sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5))
+            sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5)) #nky = 1
 
             for slice_idx in range(2):
                 # electrons
@@ -362,7 +376,7 @@ def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="ne
         # Meta group
         meta_grp = f.create_group("meta")
         meta_grp.create_dataset(dataset_cfg.mask_key, data=masks)
-        total_count_arr = np.full((n_samples,), nky, dtype=np.int32)
+        total_count_arr = np.full((n_samples,), nky, dtype=np.int32) #nky = 1
         meta_grp.create_dataset("total_count", data=total_count_arr)
 
         for key in f.keys():

@@ -125,18 +125,12 @@ class Spectra_Regularization_Trainer(Base_Trainer):
             dataloader: The data loader to get data.
         """
         losses = []
-        import math
-        nans = 0
         for data in dataloader:
             data = self.move_to_device(data)
             # For calculate losses
             loss = self.get_loss(data)
-            if loss == None or math.isnan(loss):
-                nans += 1
-                continue
-
             losses.append(loss)
-        return sum(losses) / (len(losses) - nans)
+        return sum(losses) / len(losses)
 
     def get_metrics(self, data):
         # move to device

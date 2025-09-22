@@ -2,7 +2,7 @@ defaults:
   - bal: default
   - dataset: SR_full_madcut
   - model: CGYRO
-  - opt: SR
+  - opt: CGYRO
   - _self_
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none
@@ -16,15 +16,15 @@ base_seed: 42
 dataset_workers: 2
 batch: 2
 epochs: 10
-steps_per_epoch: 1
+steps_per_epoch: 5
 loss_freq: 1
-save_freq: 1
-plot_freq: 5
+save_freq: 5
+plot_freq: 10
 time_freq: 350
 time_warm: 3
 # accumulation is for getting the mean and standard deviation of inputs/targets in model
 # set the steps to cover approximately 1 epoch
-accumulation_steps: 10
+accumulation_steps: 5
 
 # only to disable hydra's logging, ignore below
 hydra:  

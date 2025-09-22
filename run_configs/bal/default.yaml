@@ -1,9 +1,9 @@
 epoch_per_training: 1000
-acquisition_function: eig
-n_samples: 40
-new_sample_size: 10
+acquisition_function: eig # eig or random
+n_samples: 200
+new_sample_size: 100
 entropy_training_steps: 10
 model_count: 16
 dist_json_path: './src/utils/merged_dist.json'
 has_spectra: True
-iterations: 100
+iterations: 20

@@ -414,8 +414,8 @@ class BAL():
         print("Candidates found")
 
         # Each returns (scores, indices) where indices are into `candidates`
-        model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
-        print("model difference Done")
+        # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
+        # print("model difference Done")
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
@@ -423,15 +423,22 @@ class BAL():
         combined_scores = torch.zeros(len(candidates))
 
         # Place each set of scores in the correct positions
-        combined_scores[model_diff_indices] += model_diff_scores
+        # combined_scores[model_diff_indices] += model_diff_scores
         combined_scores[eig_indices] += eig_scores
 
         # Select top-K based on combined score
-        topk_scores, topk_indices = torch.topk(combined_scores, self.cfg.new_sample_size)
+        K = min(combined_scores.shape[0], self.cfg.new_sample_size)
+        topk_scores, topk_indices = torch.topk(combined_scores, K)
         topk_candidates = candidates[topk_indices]
         print("Top k candidates found")
         return topk_candidates
     
+    def random_sample(self):
+        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        random_idxs = torch.randperm(candidates.shape[0])
+        print("Candidates found")
+        return candidates[random_idxs[:self.cfg.new_sample_size]]
+
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """
         Save top-k candidates as a (k, 31) tensor in .npy format.
