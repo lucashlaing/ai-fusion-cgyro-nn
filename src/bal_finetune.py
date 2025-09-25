@@ -176,13 +176,8 @@ def run_train(cfg):
                 wandb.finish()
             break
 
-        if cfg.bal.acquisition_function == 'eig':
-            print(f'BAL: EIG Sampling')
-            new_samples = bal.propose_samples(trainer)
-        elif cfg.bal.acquisition_function == 'random':
-            print(f'BAL: Random Sampling')
-            new_samples = bal.random_sample()
-        print("new samples found")
+        print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
+        new_samples = bal.propose_samples(trainer, base_trainer)
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 

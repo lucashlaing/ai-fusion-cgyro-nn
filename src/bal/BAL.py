@@ -18,6 +18,19 @@ class BAL():
         self.dist_json_path = self.cfg.dist_json_path
         self.has_spectra = self.cfg.has_spectra
         self.dataset = dataset
+
+        self.acq_func = None
+        if run_cfg.bal.acquisition_function == 'eig':
+            self.acq_func = self.eig_sample
+        elif run_cfg.bal.acquisition_function == 'random':
+            self.acq_func = self.random_sample
+        elif run_cfg.bal.acquisition_function == 'eig_stratified':
+            self.acq_func = self.eig_stratified_sample
+        # TODO: for Lucas to test
+        elif run_cfg.bal.acquisition_functino == 'direct':
+            self.acq_func = self.direct_sample
+        else:
+            print(f'Warning: undefined acquisition function given: {run_cfg.bal.acquisition_function}')
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
@@ -386,7 +399,7 @@ class BAL():
 
         return sorted_eig_values, sorted_indices
 
-    def model_difference(self, candidates, trainer):
+    def model_difference(self, candidates, trainer, lowerTrainer, sort=False):
         """
         Sort candidates by the average predicted flux magnitude across 4 outputs.
 
@@ -400,19 +413,30 @@ class BAL():
         """
         all_predictions = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, trainer.model.lowerModel)
+        lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
+
+        all_predictions_normalized = torch.asinh(all_predictions)
+        lower_model_pred_normalized = torch.asinh(all_predictions)
 
         # makes our predictions to be for the difference
-        all_predictions = all_predictions - lower_model_pred # (model_count, n*ky, 4)
-        mean_flux = torch.mean(all_predictions, dim=0)  # (n*ky, 4)
+        diffs = all_predictions_normalized - lower_model_pred_normalized # (model_count, n*ky, 4)
+        mean_flux = torch.mean(diffs, dim=1)  # (n*ky, 4)
 
-        sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
-        return sorted_scores, sorted_indices
+        if sort:
+            sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
+            return sorted_scores, sorted_indices
+        else:
+            return mean_flux, torch.arange(0, mean_flux.shape[0])
     
-    def propose_samples(self, trainer):
+    def propose_samples(self, trainer, lowerTrainer):
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
         print("Candidates found")
 
+        proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
+        print("Proposed samples")
+        return proposed_samples
+    
+    def eig_sample(self, candidates, trainer, lowerTrainer):
         # Each returns (scores, indices) where indices are into `candidates`
         # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
         # print("model difference Done")
@@ -433,11 +457,41 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self):
-        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+    def random_sample(self, candidates, trainer, lowerTrainer):
+        # candidates shape: (n_candidates, n_features)
         random_idxs = torch.randperm(candidates.shape[0])
-        print("Candidates found")
+        print("Random candidates found")
         return candidates[random_idxs[:self.cfg.new_sample_size]]
+    
+    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
+        eig_scores, eig_indices = self.eig(candidates, trainer)
+        print("EIG Done")
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True)
+        print("Model difference done")
+        sorted_candidates = candidates[diff_indices]
+        sorted_eig_scores = eig_scores[diff_indices]
+
+        strata_eig_sums = torch.zeros(shape=(num_strata))
+        strata_size = np.floor(candidates.shape[0] / num_strata)
+
+        for i in range(num_strata):
+            strata_eig_sums[i] = torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0) 
+        
+        sorted_strata_idxs = torch.argsort(strata_eig_sums, descending=True)
+
+        proposed_samples = torch.zeros_like(candidates[0,:].unsqueeze(0))
+        for i in range(strata_weights):
+            strata_index = sorted_strata_idxs[i]
+            num_strata_samples = np.floor(self.cfg.new_sample_size * strata_weights[i])
+            strata_eig_idxs = torch.argsort(sorted_eig_scores[strata_index*strata_size : (strata_index+1)*strata_size], dim=0)
+            strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+            proposed_samples = torch.concat([proposed_samples, strata_samples], dim=0)
+        
+        return proposed_samples
+    
+    #TODO: Implement based on Lucas changes to DIRECT
+    def direct_sample(self, candidates, trainer, lowerTrainer):
+        pass
 
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """
