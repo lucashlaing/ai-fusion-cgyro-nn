@@ -51,7 +51,7 @@ class Offline(BAL):
         Returns:
             torch.Tensor: Sampled candidates
                 - Shape (n_samples, 31) if self.has_spectra=False
-                - Shape (n_samples, 24, 32) if self.has_spectra=True
+                - Shape (n_samples * 24, 32) if self.has_spectra=True
         """
         # Filter out already-used datapoints
         unused_entries = self.get_unused_entries()

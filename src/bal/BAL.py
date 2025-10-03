@@ -7,6 +7,7 @@ import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+from bal.DIRECT import DIRECT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,7 +28,7 @@ class BAL():
         elif run_cfg.bal.acquisition_function == 'eig_stratified':
             self.acq_func = self.eig_stratified_sample
         # TODO: for Lucas to test
-        elif run_cfg.bal.acquisition_functino == 'direct':
+        elif run_cfg.bal.acquisition_function == 'direct':
             self.acq_func = self.direct_sample
         else:
             print(f'Warning: undefined acquisition function given: {run_cfg.bal.acquisition_function}')
@@ -41,7 +42,6 @@ class BAL():
         Else:
             Return shape (n_samples, 31).
         """
-        import json
 
         # HARD CODED KY VALUES
         KY_LOCS = [
@@ -416,7 +416,7 @@ class BAL():
         lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
 
         all_predictions_normalized = torch.asinh(all_predictions)
-        lower_model_pred_normalized = torch.asinh(all_predictions)
+        lower_model_pred_normalized = torch.asinh(lower_model_pred)
 
         # makes our predictions to be for the difference
         diffs = all_predictions_normalized - lower_model_pred_normalized # (model_count, n*ky, 4)
@@ -491,7 +491,28 @@ class BAL():
     
     #TODO: Implement based on Lucas changes to DIRECT
     def direct_sample(self, candidates, trainer, lowerTrainer):
-        pass
+        
+        directWrapper = DIRECT(lowerTrainer, trainer)
+
+        num_classes = 5
+        classify_func = directWrapper.log_mse
+
+        # getting the train data
+        # train_inputs = list(self.dataset)
+        train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        print(f"train inputs are {train_inputs.shape}")
+        train_labels = directWrapper.annotate(train_inputs, classify_func, num_classes)
+
+        train_data = (train_inputs, train_labels)
+        print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
+
+        print(f"candidates shape is {candidates.shape}")
+        print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
+        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func)
+
+        return newCandidates
+        
 
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """
