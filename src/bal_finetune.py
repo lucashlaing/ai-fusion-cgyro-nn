@@ -85,6 +85,40 @@ def run_train(cfg):
             cfg.run_id = wandb.run.id
             cfg.entity = wandb.run.entity
             cfg.full_project_name = wandb.run.project
+
+    # set up initial training set
+    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+    
+
+    print(f'Acquiring initial train dataset')
+    full_dataset_list = list(full_dataset)  
+    print(f'Pool size: {len(full_dataset_list)}')
+    # change to new method 
+    new_samples = bal.get_initial_dataset(len(full_dataset_list))
+
+    # Add the new candidates to our train folder
+    train_dir = os.path.join(cfg.dataset.dataset_root, "train")
+    new_samples_full = []
+    for j in range(new_samples.shape[0]):
+        sample = new_samples[j,:]
+        idx, full_sample = find_in_dataset(full_dataset_list, sample)
+        if idx is not None:
+            # mark the new candidates as used from our pool
+            found_input = full_sample[0]
+            if pool_tracker.is_used(found_input):
+                print(f'Warning: acquired duplicate candidates')
+                continue
+            pool_tracker.mark_used(found_input)
+            new_samples_full.append(full_sample)
+            print(f'Saved new sample')
+        else:
+            print(f'Query could not be matched in pool')
+
+    total_num_samples = len(new_samples_full)
+    print(f'Number of acquired samples for initial train: {total_num_samples}')
+
+    save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
 
@@ -210,8 +244,10 @@ def run_train(cfg):
         num_acquired_samples.append(num_acq)
         print(f'Number of acquired samples: {num_acq}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
+        total_num_samples += num_acq
         if cfg.board:
             wandb.log({"num of samples": num_acq})
+            wandb.log({"total samples": total_num_samples})
 
         save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 

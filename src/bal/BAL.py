@@ -463,6 +463,13 @@ class BAL():
         print("Random candidates found")
         return candidates[random_idxs[:self.cfg.new_sample_size]]
     
+    def get_initial_dataset(self, poolSize):
+        candidates = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+
+        random_idxs = torch.randperm(candidates.shape[0])
+        print("Random candidates found")
+        return candidates[random_idxs[:self.cfg.initial_training_size]]
+    
     def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
