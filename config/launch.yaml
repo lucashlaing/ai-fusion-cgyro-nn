@@ -2,7 +2,7 @@ project_name: ai-fusion-cgyro-nn
 model:
   generate-initial-dataset-via-jacobian:
     command: >-
-      [](make download file=ersp_res/700000_params.pth; cp ersp_res/700000_params.pth src/jacobian/;) cd src/jacobian; python generate_dataset.py -N <num_samples> -K <num_candidates>; cd ../../; cp "src/jacobian/samples_top<num_candidates>.pkl" "ersp_res/<num_candidates>"; make upload file="ersp_res/samples_top<num_candidates>.pkl";
+      [](make download file=ersp_res/700000_params.pth; cp ersp_res/700000_params.pth src/jacobian/;) cd src/jacobian; python generate_dataset.py -N <num_samples> -K <num_candidates>; cd ../../; cp "src/jacobian/samples_top<num_candidates>.pkl" "ersp_res/samples_top<num_candidates>_<index>.pkl"; make upload file="ersp_res/samples_top<num_candidates>_<index>.pkl";
     gpu_count: 2
     memory: 128
     cpu_count: 16
@@ -10,6 +10,7 @@ model:
     hparam:
       _num_samples: [25000]
       _num_candidates: [2500]
+      _index: [4]
   bal-from-scratch: # download TGLF-SINN checkpoint
     command: >-
       [](make download file=tglf_sumf_data_full_madcut_filter/train_filtered/tglfnn_DB_sat2_em_azf-1_RLNS_12_+1_azf-1_processed.h5;) python train.py; make upload file=;

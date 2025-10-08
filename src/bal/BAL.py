@@ -7,6 +7,7 @@ import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+from bal.DIRECT import DIRECT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -18,6 +19,19 @@ class BAL():
         self.dist_json_path = self.cfg.dist_json_path
         self.has_spectra = self.cfg.has_spectra
         self.dataset = dataset
+
+        self.acq_func = None
+        if run_cfg.bal.acquisition_function == 'eig':
+            self.acq_func = self.eig_sample
+        elif run_cfg.bal.acquisition_function == 'random':
+            self.acq_func = self.random_sample
+        elif run_cfg.bal.acquisition_function == 'eig_stratified':
+            self.acq_func = self.eig_stratified_sample
+        # TODO: for Lucas to test
+        elif run_cfg.bal.acquisition_function == 'direct':
+            self.acq_func = self.direct_sample
+        else:
+            print(f'Warning: undefined acquisition function given: {run_cfg.bal.acquisition_function}')
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
@@ -28,7 +42,6 @@ class BAL():
         Else:
             Return shape (n_samples, 31).
         """
-        import json
 
         # HARD CODED KY VALUES
         KY_LOCS = [
@@ -76,7 +89,6 @@ class BAL():
             return final_input
         else:
             return x_samples  # (n_samples, 31)
-
 
     def get_prediction(self, input, model):
             """
@@ -347,7 +359,6 @@ class BAL():
 
         return grouped_candidates, grouped_predictions, masks
 
-
     def eig(self, candidates, trainer):
         
         # 1. calcuate prior entropy
@@ -358,7 +369,7 @@ class BAL():
         all_predictions_per_ky = all_predictions_per_ky.cpu()
         var_predictions = torch.var(all_predictions_per_ky, dim=0)
         var_predictions = torch.mean(var_predictions, dim=1)
-        prior = self. compute_entropy(var_predictions)
+        prior = self.compute_entropy(var_predictions)
         print("THe shape of the priror entropy is ", prior.shape)
         end_time = time.time()
         print("Time to prior compute_entropy: " + str(end_time - start_time))
@@ -388,7 +399,7 @@ class BAL():
 
         return sorted_eig_values, sorted_indices
 
-    def model_difference(self, candidates, trainer):
+    def model_difference(self, candidates, trainer, lowerTrainer, sort=False):
         """
         Sort candidates by the average predicted flux magnitude across 4 outputs.
 
@@ -402,23 +413,39 @@ class BAL():
         """
         all_predictions = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, trainer.model.lowerModel)
+        lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
 
+        all_predictions_normalized = torch.asinh(all_predictions)
+        lower_model_pred_normalized = torch.asinh(lower_model_pred)
+
+        print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
+        print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
         # makes our predictions to be for the difference
-        all_predictions = all_predictions - lower_model_pred # (model_count, n*ky, 4)
-        mean_flux = torch.mean(all_predictions, dim=0)  # (n*ky, 4)
+        diffs = all_predictions_normalized - lower_model_pred_normalized # (model_count, n*ky, 4)
+        print(f'Diffs have NaN: {torch.isnan(diffs).any()}')
+        mean_flux = torch.mean(diffs, dim=0)  # (n*ky, 4)
+        print(f'Mean Diffs 1 have NaN: {torch.isnan(mean_flux).any()}')
+        mean_flux = torch.mean(mean_flux, dim=1)  # (n*ky)
+        print(f'Mean Diffs 2 have NaN: {torch.isnan(mean_flux).any()}')
 
-        sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
-        return sorted_scores, sorted_indices
-
-
-    def propose_samples(self, trainer):
+        if sort:
+            sorted_scores, sorted_indices = torch.sort(mean_flux, descending=True)
+            return sorted_scores, sorted_indices
+        else:
+            return mean_flux, torch.arange(0, mean_flux.shape[0])
+    
+    def propose_samples(self, trainer, lowerTrainer):
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
         print("Candidates found")
 
+        proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
+        print("Proposed samples")
+        return proposed_samples
+    
+    def eig_sample(self, candidates, trainer, lowerTrainer):
         # Each returns (scores, indices) where indices are into `candidates`
-        model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
-        print("model difference Done")
+        # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
+        # print("model difference Done")
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
@@ -426,15 +453,93 @@ class BAL():
         combined_scores = torch.zeros(len(candidates))
 
         # Place each set of scores in the correct positions
-        combined_scores[model_diff_indices] += model_diff_scores
+        # combined_scores[model_diff_indices] += model_diff_scores
         combined_scores[eig_indices] += eig_scores
 
         # Select top-K based on combined score
-        topk_scores, topk_indices = torch.topk(combined_scores, self.cfg.new_sample_size)
+        K = min(combined_scores.shape[0], self.cfg.new_sample_size)
+        topk_scores, topk_indices = torch.topk(combined_scores, K)
         topk_candidates = candidates[topk_indices]
         print("Top k candidates found")
         return topk_candidates
     
+    def random_sample(self, candidates, trainer, lowerTrainer):
+        # candidates shape: (n_candidates, n_features)
+        random_idxs = torch.randperm(candidates.shape[0])
+        print("Random candidates found")
+        return candidates[random_idxs[:self.cfg.new_sample_size]]
+    
+    def get_initial_dataset(self, poolSize):
+        candidates = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+
+        random_idxs = torch.randperm(candidates.shape[0])
+        print("Random candidates found")
+        return candidates[random_idxs[:self.cfg.initial_training_size]]
+    
+    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
+        eig_scores, eig_indices = self.eig(candidates, trainer)
+        print("EIG Done")
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True)
+        print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
+        print(f'Residual Std: {torch.std(diffs, dim=0)}')
+        print(f'Diffs Shape: {diffs.shape}')
+        sorted_candidates = candidates[diff_indices]
+        sorted_eig_scores = eig_scores[diff_indices]
+
+        strata_eig_sums = []
+        strata_size = int(np.floor(candidates.shape[0] / num_strata))
+
+        for i in range(num_strata):
+            strata_eig_sums.append(torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0))
+        
+        strata_eig_sums = torch.tensor(strata_eig_sums)
+        
+        sorted_strata_idxs = torch.argsort(strata_eig_sums, descending=True)
+
+        proposed_samples = torch.zeros_like(candidates[0,:].unsqueeze(0))
+        total_samples_collected = 0
+        for i in range(len(strata_weights)):
+            strata_index = sorted_strata_idxs[i]
+            print(f'Strata Index: {strata_index}')
+            num_strata_samples = int(np.ceil(self.cfg.new_sample_size * strata_weights[i]))
+
+            if total_samples_collected + num_strata_samples > self.cfg.new_sample_size:
+                num_strata_samples = self.cfg.new_sample_size - total_samples_collected
+
+            total_samples_collected += num_strata_samples
+                
+            strata_eig_idxs = torch.argsort(sorted_eig_scores[strata_index*strata_size : (strata_index+1)*strata_size], dim=0)
+            strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+            proposed_samples = torch.concat([proposed_samples, strata_samples], dim=0)
+            print(f'Strata Samples {i}: {strata_samples.shape[0]}')
+        print(f'EIG Strat Proposed Samples have NaN: {torch.isnan(proposed_samples).any()}')
+        return proposed_samples[1:] #remove first element, as it is a zero tensor
+    
+    #TODO: Implement based on Lucas changes to DIRECT
+    def direct_sample(self, candidates, trainer, lowerTrainer):
+        
+        directWrapper = DIRECT(lowerTrainer, trainer)
+
+        num_classes = 5
+        classify_func = directWrapper.log_mse
+
+        # getting the train data
+        # train_inputs = list(self.dataset)
+        train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        print(f"train inputs are {train_inputs.shape}")
+        train_labels = directWrapper.annotate(train_inputs, classify_func, num_classes)
+
+        train_data = (train_inputs, train_labels)
+        print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
+
+        print(f"candidates shape is {candidates.shape}")
+        print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
+        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func)
+
+        return newCandidates
+        
+
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """
         Save top-k candidates as a (k, 31) tensor in .npy format.
@@ -461,25 +566,23 @@ class BAL():
         
         # Convert to numpy
         candidates_np = candidates.cpu().numpy()
-        
-        # print(f"DEBUG: Input candidates shape: {candidates_np.shape}")
-        
+
         if self.has_spectra:
-            # candidates shape: (k, 24, 32)
+            # DEPRECATED candidates shape: (k, 24, 32)
+            # ---------------------------------------
+            # UPDATED candidates shape: (k, 32)
             # Extract input features (first 31 features) from any ky slice since they're repeated
-            if len(candidates_np.shape) == 3 and candidates_np.shape[2] == 32:
+            if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 32:
                 # Take the first ky slice and remove the last column (ky values)
-                top_k_features = candidates_np[:, 0, :-1]  # (k, 31)
-                # print(f"DEBUG: Extracted features from spectra format: {top_k_features.shape}")
+                top_k_features = candidates_np[:, :-1]  # (k, 31)
             else:
-                raise ValueError(f"Expected candidates shape (k, 24, 32) for spectra, got {candidates_np.shape}")
+                raise ValueError(f"Expected candidates shape (k, 32) for spectra, got {candidates_np.shape}")
         else:
             # candidates shape: (k, 31)
             if len(candidates_np.shape) == 2 and candidates_np.shape[1] == 31:
                 top_k_features = candidates_np  # Already in correct format
-                # print(f"DEBUG: Using candidates directly (no spectra): {top_k_features.shape}")
             else:
-                raise ValueError(f"Expected candidates shape (k, 31) for non-spectra, got {candidates_np.shape}")
+                raise ValueError(f"Expected candidates shape (k, 32) for non-spectra, got {candidates_np.shape}")
         
         # Validate final shape
         if top_k_features.shape[1] != 31:
@@ -490,8 +593,5 @@ class BAL():
         
         # Save as .npy file
         np.save(full_path, top_k_features)
-        
-        # print(f"DEBUG: Saved top-{top_k_features.shape[0]} candidates to: {full_path}")
-        # print(f"DEBUG: Final saved shape: {top_k_features.shape}")
         
         return full_path

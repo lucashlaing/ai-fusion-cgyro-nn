@@ -6,5 +6,5 @@ from .Spectra_Regularization import Spectra_Regularization_NN
 MODEL_HANDLER = {
     "TGLF_NN": EncoderResnetDecoder,
     "SR": Spectra_Regularization_NN,
-    "CGYRO": CGYRO_NN,
+    "CGYRO": Spectra_Regularization, #CGYRO_NN,
 }

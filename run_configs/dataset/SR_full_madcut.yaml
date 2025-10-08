@@ -1,4 +1,4 @@
-dataset_root: './test_data'
+dataset_root: './normal_dataset'
 input_keys: [
     "RLTS_3",
     "KAPPA_LOC",
