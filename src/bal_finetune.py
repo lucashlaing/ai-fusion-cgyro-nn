@@ -4,6 +4,9 @@ import hydra
 import wandb
 import pytz
 from datetime import datetime
+import h5py
+import numpy as np
+import os
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from bal import BAL_HANDLER
@@ -49,9 +52,14 @@ def run_train(cfg):
     # For the last iteration, train but do not run further BAL
     num_iter = cfg.bal.iterations + 2
 
+<<<<<<< HEAD
     test_losses = np.zeros(shape=(num_iter))
     test_rmsle = np.zeros(shape=(num_iter))
     num_acquired_samples = np.zeros(shape=(num_iter))
+=======
+    test_losses = []
+    num_acquired_samples = []
+>>>>>>> 6ba7affdc83b6941adaca8ef0c1148ef57cb615c
 
     # Load model for freezing and comparison
     baseModel = MODEL_HANDLER["SR"](cfg.model)
@@ -71,21 +79,55 @@ def run_train(cfg):
         )
     test_loopers = InfiniteDataLooper(test_loader)
 
+    # LUCAS KEY .... CHANGE TO ZACH
+    if cfg.board:
+        wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
+        wandb.init(
+            project=f"{cfg.project}-train-fixed-op",
+            config=OmegaConf.to_container(cfg, resolve=True),
+            name=f"{time_stamp}_BAL_{cfg.bal.acquisition_function}"
+        )
+        with open_dict(cfg):
+            cfg.run_id = wandb.run.id
+            cfg.entity = wandb.run.entity
+            cfg.full_project_name = wandb.run.project
+
+    # set up initial training set
+    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+    
+
+    print(f'Acquiring initial train dataset')
+    full_dataset_list = list(full_dataset)  
+    print(f'Pool size: {len(full_dataset_list)}')
+    # change to new method 
+    new_samples = bal.get_initial_dataset(len(full_dataset_list))
+
+    # Add the new candidates to our train folder
+    train_dir = os.path.join(cfg.dataset.dataset_root, "train")
+    new_samples_full = []
+    for j in range(new_samples.shape[0]):
+        sample = new_samples[j,:]
+        idx, full_sample = find_in_dataset(full_dataset_list, sample)
+        if idx is not None:
+            # mark the new candidates as used from our pool
+            found_input = full_sample[0]
+            if pool_tracker.is_used(found_input):
+                print(f'Warning: acquired duplicate candidates')
+                continue
+            pool_tracker.mark_used(found_input)
+            new_samples_full.append(full_sample)
+            print(f'Saved new sample')
+        else:
+            print(f'Query could not be matched in pool')
+
+    total_num_samples = len(new_samples_full)
+    print(f'Number of acquired samples for initial train: {total_num_samples}')
+
+    save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
 
-        # LUCAS KEY .... CHANGE TO ZACH
-        if cfg.board:
-            wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
-            wandb.init(
-                project=f"{cfg.project}-train-fixed-op",
-                config=OmegaConf.to_container(cfg, resolve=True),
-                name=f"{time_stamp}_BAL_{i}"
-            )
-            with open_dict(cfg):
-                cfg.run_id = wandb.run.id
-                cfg.entity = wandb.run.entity
-                cfg.full_project_name = wandb.run.project
 
         # Load model for finetuning
         model =  MODEL_HANDLER["SR"](cfg.model)
@@ -166,7 +208,10 @@ def run_train(cfg):
         print("Training Done")
 
         # Plot / log losses
-        test_losses[i] = trainer.get_test_loss(test_loader)
+        current_test_loss = trainer.get_test_loss(test_loader)
+        if torch.is_tensor(current_test_loss):
+            current_test_loss = current_test_loss.detach().cpu().item()
+        test_losses.append(current_test_loss)
         base_loss = base_trainer.get_test_loss(test_loader)
         test_rmsle[i] = trainer.get_test_rmsle(test_loader)
         base_rmsle = base_trainer.get_test_rmsle(test_loader)
@@ -175,13 +220,16 @@ def run_train(cfg):
         print(f'Test RMSLE: {test_rmsle[i]}')
         print(f'Base Model RMSLE: {base_rmsle}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
+<<<<<<< HEAD
     
+=======
+        if cfg.board:
+            wandb.log({"BAL_test_loss": current_test_loss})
+>>>>>>> 6ba7affdc83b6941adaca8ef0c1148ef57cb615c
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
         
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
-            if cfg.board:
-                wandb.finish()
             break
 
         print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
@@ -212,13 +260,18 @@ def run_train(cfg):
                 print(f'Query could not be matched in pool')
 
         num_acq = len(new_samples_full)
-        num_acquired_samples[i] = num_acq
+        num_acquired_samples.append(num_acq)
         print(f'Number of acquired samples: {num_acq}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
+        total_num_samples += num_acq
+        if cfg.board:
+            wandb.log({"num of samples": num_acq})
+            wandb.log({"total samples": total_num_samples})
+
         save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
-        if cfg.board:
-            wandb.finish()
+    if cfg.board:
+        wandb.finish()
         
     pool_tracker.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/tracker.json")
 
@@ -280,9 +333,6 @@ def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
                 return idx, (input_data[j], target_flux_per_ky[j])
     return None, None
 
-import h5py
-import numpy as np
-import os
 
 def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="new_data.h5"):
     """

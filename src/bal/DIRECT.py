@@ -1,15 +1,42 @@
 import torch
 import numpy as np
-from Offline import Offline
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class DIRECT(Offline):
-    def __init__(self, run_cfg, dataset, pool_dataset, pool_tracker):
+class DIRECT():
+    def __init__(self, tglf_trainer, cgyro_trainer):
         # super().__init__(run_cfg, dataset, pool_dataset, pool_tracker)
-        pass
+        self.tglf_trainer = tglf_trainer
+        self.cgyro_trainer = cgyro_trainer
     
-    def log_mse(self, candidates, num_classes):
+    def get_predictions(self, input, model):
+        """
+        Get predictions from the model.
+
+        Args:
+            input: input data (Tensor)
+            model: the trained model
+
+        Returns:
+            predictions: Tensor of model predictions
+        """
+        predictions = []
+
+        # Split input into chunks of 50,000
+        chunk_size = 50000
+        input_chunks = torch.split(input, chunk_size, dim=0)
+
+        with torch.no_grad():
+            model.eval()  # Set model to evaluation mode (Dropout off)
+            for chunk in input_chunks:
+                pred = model(chunk.to(device))
+                predictions.append(pred.cpu())
+
+        all_preds = torch.cat(predictions, dim=0)
+        all_preds_normalized = torch.asinh(all_preds)
+        return all_preds
+
+    def log_mse(self, candidates, num_classes, mean, std):
         """
         Classifies inputs based on log ratio of TGLF to CGYRO outputs corresponding to that input.
 
@@ -22,13 +49,21 @@ class DIRECT(Offline):
         Returns:
             labels (Tensor): Labels corresponding to inputs
         """
-        N_samples = candidates.shape[0]
-        tglf_out = self.mock_predictions(N_samples)
-        cgyro_out = self.mock_predictions(N_samples)
+        tglf_out = self.get_predictions(candidates, self.tglf_trainer.model)
+        cgyro_out = self.get_predictions(candidates, self.cgyro_trainer.model)
         deltas = torch.sum(torch.abs(((tglf_out ** 2) - (cgyro_out ** 2))), dim=1)
-        logs = torch.log10(deltas)
-        logs = logs.view(-1, 1)  # ensures shape [N_samples,1]
-        labels = torch.minimum(torch.floor(logs), torch.full(size=(N_samples, 1), fill_value=num_classes))
+
+        # Standardize deltas -> z-scores
+        z_scores = (deltas - mean) / (std + 1e-12)
+        # Bucket by integer multiples of std
+        labels = torch.floor(torch.abs(z_scores))  # 0 = within 1 std, 1 = 1-2 std, etc.
+        labels = torch.clamp(labels, min=0, max=num_classes - 1)
+        labels = labels.view(-1, 1).long()
+
+        # Count per class
+        label_counts = torch.bincount(labels.view(-1), minlength=num_classes)
+        print("Samples per class:", label_counts.tolist())
+
         return labels
     
     def annotate(self, candidates, classify_func, num_classes):
@@ -45,7 +80,7 @@ class DIRECT(Offline):
         Returns:
             labels (Tensor): labels associated with candidates, annotated using the classify_func
         """
-        labels = classify_func(candidates, num_classes)
+        labels = classify_func(candidates, num_classes, 0.3, 0.1)
         return labels
     
     def vreduce_loss(self, train_data, pivot_idx, class_idx):
@@ -54,78 +89,87 @@ class DIRECT(Offline):
         upper_loss = (train_labels[pivot_idx:] == class_idx).sum() # everything rihgt of pivot should not be class_idx
         return lower_loss + upper_loss
 
-    def vreduce(self, train_data, budget, class_idx, B_parallel, sorted_candidates, num_classes, classify_func):
-        train_inputs, train_labels = train_data
-        N = train_inputs.shape[0]
-        print(f'Label shape: {train_labels.shape}')
-        print(f'Input shape: {train_inputs.shape}')
-        assert N == train_labels.shape[0]
+    def vreduce(self, sorted_inputs, sorted_labels, candidate_mask, budget, class_idx, B_parallel, num_classes, classify_func):
+        
+        N_total = sorted_inputs.shape[0]
+        print(f'Label shape: {sorted_labels.shape}')
+        print(f'Input shape: {sorted_inputs.shape}')
+        assert N_total == sorted_labels.shape[0]
         # Initialize version space
-        I = 0
-        J = 0
-        for i in range(N):
-            y_i = train_labels[i]
-            if y_i != class_idx:
-                I = i - 1
-                break
-        for j in range(N - 1, 0, -1):
-            y_j = train_labels[j]
-            if y_j == class_idx:
-                J = j + 1
-                break
+        # I = 0
+        # J = 0
+        # for i in range(N):
+        #     y_i = train_labels[i]
+        #     if y_i != class_idx:
+        #         I = i - 1
+        #         break
+        # for j in range(N - 1, 0, -1):
+        #     y_j = train_labels[j]
+        #     if y_j == class_idx:
+        #         J = j + 1
+        #         break
 
-        if I < 0: I = 0 # Ensure I is not negative
+        # if I < 0: I = 0 # Ensure I is not negative
 
-        # Calc num iterations and shrink factor
+        indices = (sorted_labels.squeeze() == class_idx).nonzero(as_tuple=True)[0]
+        if len(indices) == 0:
+            print(f"No samples for class {class_idx}")
+            return sorted_inputs, sorted_labels, candidate_mask
+        
+        I = indices.min().item()
+        J = indices.max().item() + 1
+        # Clamp to valid global range
+        I = max(0, I)
+        J = min(N_total, J)
+
+        # === SAME as before ===
         num_iter = int(np.floor(budget / B_parallel))
-        shrink_factor = (J - I) ** (1 / num_iter)
-        M = sorted_candidates.shape[0]
+        shrink_factor = (J - I) ** (1 / num_iter) if num_iter > 0 else 0
+        if shrink_factor == 0:
+            print(f"[WARN] shrink_factor=0, aborting vreduce early.")
+            return sorted_inputs, sorted_labels, candidate_mask
 
+        print("Candidate indices (global):", torch.where(candidate_mask)[0][:20], "...")
+        print(f"Current I={I}, J={J}")
         for t in range(num_iter):
-            print(f'I = {I}')
-            print(f'J = {J}')
-            sampled_idxs = torch.minimum(torch.floor(torch.rand(B_parallel) * (J - I) + I), torch.full(size=(B_parallel,), fill_value=M-1)).long()
-            # print(f"Sample indices: {sampled_idxs}")
+            print(f"[Iter {t}] I={I}, J={J}")
 
-            print("sampled_idxs:", sampled_idxs)
-            print("sampled_idxs.shape:", sampled_idxs.shape)
+            # Restrict candidates to lie inside [I, J)
+            candidate_indices = torch.arange(I, J)[candidate_mask[I:J]]
+            if len(candidate_indices) == 0:
+                print(f"[WARN] No candidates inside [{I},{J}] for class {class_idx}")
+                break
 
-            samples = sorted_candidates[sampled_idxs].squeeze()
-            if B_parallel == 1:
-                samples = samples.unsqueeze(0)
+            # Sample uniformly among those candidate indices
+            sampled_idxs = candidate_indices[
+                torch.randint(0, len(candidate_indices), (B_parallel,))
+            ]
 
-            # label samples and ensures it is (B_parallel, n_samples)
+            samples = sorted_inputs[sampled_idxs]
             labels = self.annotate(samples, classify_func, num_classes)
             if labels.ndim == 1:
                 labels = labels.unsqueeze(1)
 
-            train_inputs = torch.concat([train_inputs, samples], dim=0)
-            train_labels = torch.concat([train_labels, labels], dim=0)
+            # Instead of concatenating into separate arrays, directly update global labels
+            sorted_labels[sampled_idxs] = labels
+            candidate_mask[sampled_idxs] = False  # mark them as no longer candidates
 
-            # Remove sampled points from candidates to avoid duplicates
-            mask = torch.ones(sorted_candidates.shape[0], dtype=torch.bool)
-            mask[sampled_idxs] = False
-            sorted_candidates = sorted_candidates[mask]
-
-            # update train data to contain n_samples as well
-            train_data = (train_inputs, train_labels)
-
-            print(f"Train_inputs with label Shape: {train_inputs.shape}")
             # Update version space
-            target_interval = max(1, min(J - I, int((J - I) / shrink_factor))) # to make srue interval is at least 1
-            min_loss = float("inf")
-            min_i = -1
-            min_j = -1
+            interval = J - I
+            target_interval = max(1, min(interval, int(interval / shrink_factor)))
+            min_loss, min_i, min_j = float("inf"), -1, -1
             for i in range(I, J - target_interval):
                 j = i + target_interval
-                loss = max(self.vreduce_loss(train_data, i, class_idx), self.vreduce_loss(train_data, j, class_idx))
+                loss = max(self.vreduce_loss((sorted_inputs, sorted_labels), i, class_idx),
+                        self.vreduce_loss((sorted_inputs, sorted_labels), j, class_idx))
                 if loss < min_loss:
-                    min_loss = loss
-                    min_i = i
-                    min_j = j
-            I = min_i
-            J = min_j
-        return train_inputs, train_labels
+                    min_loss, min_i, min_j = loss, i, j
+            if min_i == -1 or min_j == -1:
+                print(f"[WARN] No valid (I,J) update. Stopping early.")
+                break
+            I, J = min_i, min_j
+
+        return sorted_inputs, sorted_labels, candidate_mask
 
     def estimate_optimal_separation_threshold(self, class_idx, labels, inputs):
         N = labels.shape[0]
@@ -143,7 +187,87 @@ class DIRECT(Offline):
                 max_j = j
         return max_j
     
-    def direct(self, train_data, candidates, cgyro_trainer, tglf_trainer, num_classes, B_train, B_parallel, classify_func):
+    def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes):
+
+        N_total = sorted_inputs.shape[0]
+
+        # ensure we have enough candidates available globally to fulfill the request
+        total_available = int(((candidate_mask) & original_candidate_mask).sum().item())
+        if total_available < budget_per_class:
+            raise ValueError(
+                f"Not enough remaining candidate points to select {budget_per_class} "
+                f"for class {class_idx}. Available: {total_available}"
+            )
+
+        # Compute labeled set (those not currently candidates)
+        labeled_mask = ~candidate_mask
+        labeled_indices = torch.where(labeled_mask)[0]  # indices in sorted_inputs of labeled points
+        if labeled_indices.numel() == 0:
+            # If nothing labeled yet, choose a reasonable initial center:
+            # fallback to the middle of the sorted array
+            global_threshold_idx = N_total // 2
+        else:
+            labeled_inputs = sorted_inputs[labeled_mask]
+            labeled_labels = sorted_labels[labeled_mask]
+
+            # estimate threshold within the labeled-only space
+            # this returns an index into labeled_inputs
+            threshold_k = self.estimate_optimal_separation_threshold(class_idx, labeled_labels, labeled_inputs)
+
+            # Map threshold index back to global sorted_inputs index
+            # If threshold_k equals len(labeled_indices) (edge case), clamp
+            threshold_k_clamped = min(threshold_k, labeled_indices.shape[0] - 1)
+            global_threshold_idx = int(labeled_indices[threshold_k_clamped].item())
+
+        # initial symmetrical window size (centered at global_threshold_idx)
+        # We start with a small window and expand symmetrically until we collect enough
+        start_idx = int(global_threshold_idx)
+        end_idx = int(global_threshold_idx) + 1  # [start_idx, end_idx) initially covers the center element
+
+        collected = []  # store global indices (ints) of selected candidates, preserve order seen
+
+        # Expand symmetrically until we gather budget_per_class candidate indices
+        while len(collected) < budget_per_class:
+            # clamp interval to global bounds
+            s = max(0, start_idx)
+            e = min(N_total, end_idx)
+
+            # create mask covering the current interval
+            range_mask = torch.zeros_like(candidate_mask)
+            range_mask[s:e] = True
+
+            # eligible: in the interval AND still a candidate AND originally a candidate
+            valid_threshold_mask = range_mask & candidate_mask & original_candidate_mask
+            new_idxs = torch.where(valid_threshold_mask)[0].tolist()
+
+            # add only unseen ones
+            for idx in new_idxs:
+                if idx not in collected:
+                    collected.append(int(idx))
+                    if len(collected) == budget_per_class:
+                        break
+
+            # if still not enough, expand symmetrically outward by one on each side
+            if len(collected) < budget_per_class:
+                # expand: move start left by 1, end right by 1
+                start_idx = start_idx - 1
+                end_idx = end_idx + 1
+
+        sampled_idxs = torch.tensor(collected, dtype=torch.long)
+
+        # Annotate selected inputs
+        samples = sorted_inputs[sampled_idxs]
+        labels = self.annotate(samples, classify_func, num_classes)
+        if labels.ndim == 1:
+            labels = labels.unsqueeze(1)
+
+        # Update global sorted_labels and candidate mask so they won't be reused
+        sorted_labels[sampled_idxs] = labels
+        candidate_mask[sampled_idxs] = False
+
+        return sorted_inputs, sorted_labels, candidate_mask
+    
+    def direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
         """
         Expected train_data shape: (N_ky_samples, 32)
         Expected candidate shape: (N_candidates, 32)
@@ -164,11 +288,10 @@ class DIRECT(Offline):
             torch.ones(N_candidates, dtype=torch.bool)
         ], dim=0)  # first (N_train) False, last (N_candidates) True
         
-        #cgyro_all_predictions, _ = self.get_prediction(all_inputs, cgyro_trainer.model)
-        #tglf_all_predictions, _ = self.get_prediction(all_inputs, tglf_trainer.model)
-        N_ky_samples = all_inputs.shape[0]
-        cgyro_all_predictions = self.mock_predictions(N_ky_samples)
-        tglf_all_predictions = self.mock_predictions(N_ky_samples)
+        # NO ASINH SINCE SO SMALL DIFF
+        cgyro_all_predictions = self.get_predictions(all_inputs, self.cgyro_trainer.model)
+        tglf_all_predictions = self.get_predictions(all_inputs, self.tglf_trainer.model)
+        
         # Expected predictions shape: (N_ky_samples, 4)
         pred_mse = torch.sum(torch.abs((cgyro_all_predictions ** 2) - (tglf_all_predictions ** 2)), dim=1) # expected shape: (N_ky_samples)
         print(f"MSE Shape: {pred_mse.shape}")
@@ -176,58 +299,57 @@ class DIRECT(Offline):
         sorted_idxs = pred_mse.argsort()
         sorted_inputs = all_inputs[sorted_idxs, :]
         sorted_labels = all_labels[sorted_idxs, :]
+        # create masks
         candidate_mask = is_candidate[sorted_idxs] # (N_train + N_candidates,) boolean values
-        train_mask = ~candidate_mask
-        # Acquire sorted subsets (train, train artificial labels, candidates)
-        sorted_candidates = sorted_inputs[candidate_mask]
-        sorted_train_inputs = sorted_inputs[train_mask]
-        sorted_train_labels = sorted_labels[train_mask]
-        initial_train_size = sorted_train_inputs.shape[0]
-
-        print(f'Sorted Candidates shape: {sorted_candidates.shape}')
-        print(f'Sorted train inputs shape: {sorted_train_inputs.shape}')
-        print(f'Sorted train labels shape: {sorted_train_labels.shape}')
-        # Initialize new_train_data as old train_data
-        new_train_data = sorted_train_inputs.clone(), sorted_train_labels.clone()
+        original_candidate_mask = candidate_mask.clone()
+        
         # Spend half of budget on using VReduce to sample inputs near the optimal separation threshold
         budget = B_train / (2 * num_classes)
-        for k in range(num_classes):
-            new_train_data = self.vreduce(new_train_data, budget, k, B_parallel, sorted_candidates, num_classes, classify_func)
+        if budget > 0:
+            for k in range(num_classes):
+                sorted_inputs, sorted_labels, candidate_mask = self.vreduce(
+                    sorted_inputs, 
+                    sorted_labels, 
+                    candidate_mask,
+                    budget, 
+                    k, 
+                    B_parallel, 
+                    num_classes, 
+                    classify_func
+                )
         # Spend the rest of the budget on estimating optimal separation threshold and annotating near it
-        new_inputs, new_labels = new_train_data
-        num_acquired_by_vreduce = new_inputs.shape[0] - initial_train_size
+        new_inputs = sorted_inputs[~candidate_mask]
+        new_labels = sorted_labels[~candidate_mask]
+
+        picked_by_vreduce_mask = (~candidate_mask) & original_candidate_mask 
+        vr_inputs = sorted_inputs[picked_by_vreduce_mask]
+        vr_labels = sorted_labels[picked_by_vreduce_mask]
+
+        num_acquired_by_vreduce = picked_by_vreduce_mask.sum().item() # counts num from the mask itself
+        print(f"Num acquired by vreduce {num_acquired_by_vreduce}")
         remaining = max(0, int(B_train) - int(num_acquired_by_vreduce))
         budget_per_class = remaining // num_classes
-        # Used for sampling range of inputs near optimal sep. threshold
-        left_bound = int(budget_per_class / 2)
-        right_bound = budget_per_class - left_bound
+        # Call threshold_select for each class (it updates sorted_inputs/labels/mask in place)
+        if budget_per_class > 0:
+            for k in range(num_classes):
+                sorted_inputs, sorted_labels, candidate_mask = self.threshold_select(
+                    sorted_inputs,
+                    sorted_labels,
+                    candidate_mask,
+                    original_candidate_mask,
+                    budget_per_class,
+                    k,
+                    classify_func,
+                    num_classes,
+                )
 
-        new_inputs, new_labels = new_train_data
-        optimal_sep_thresholds = []
-
-        for k in range(num_classes):
-            threshold_k = self.estimate_optimal_separation_threshold(k, new_labels, new_inputs)
-            optimal_sep_thresholds.append(threshold_k)
-            # Sample inputs closest to threshold for annotation
-            start_idx = int(threshold_k - left_bound)
-            end_idx = int(threshold_k + right_bound)
-
-            # Clamp indices to valid range
-            start_idx = max(0, start_idx)
-            end_idx = min(sorted_inputs.shape[0], end_idx)
-
-            nearest_inputs = sorted_inputs[start_idx:end_idx]
-            nearest_labels = self.annotate(nearest_inputs, classify_func, num_classes)
-
-            print("new_labels shape:", new_labels.shape)
-            print("nearest_labels shape:", nearest_labels.shape)
-            new_inputs = torch.concat([new_inputs, nearest_inputs], dim=0)
-            new_labels = torch.concat([new_labels, nearest_labels], dim=0)
-
-        new_train_data = new_inputs, new_labels
-        print(f"final inputs shape: {new_inputs.shape}")
-        # returning train set + new data points
-        return new_train_data
+        # Build final picked mask: those indices that were originally candidates and now are not candidates
+        picked_mask = (~candidate_mask) & original_candidate_mask
+        print(f"Total selected {picked_mask.sum().item()}")
+        picked_inputs = sorted_inputs[picked_mask]
+        print(picked_inputs.shape)
+        # Ensure returning a tensor 
+        return picked_inputs
     
     def compute_num_classes(self, candidates, classify_func, num_classes):
         labels = classify_func(candidates, num_classes)
@@ -250,5 +372,5 @@ if __name__ == "__main__":
     train_labels = torch.floor(torch.rand(size=(N_train_samples, 1)) * num_classes).int()
     train = train_data, train_labels
     candidates = torch.rand(size=(N_candidates, 32))
-    bal = DIRECT(None, None, None, None)
+    bal = DIRECT()
     bal.direct(train, candidates, None, None, num_classes, B_train, B_parallel, bal.log_mse)

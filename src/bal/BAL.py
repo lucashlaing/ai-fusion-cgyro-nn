@@ -7,6 +7,7 @@ import numpy as np
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+from bal.DIRECT import DIRECT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -41,7 +42,6 @@ class BAL():
         Else:
             Return shape (n_samples, 31).
         """
-        import json
 
         # HARD CODED KY VALUES
         KY_LOCS = [
@@ -415,9 +415,8 @@ class BAL():
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
         lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
 
-
-        all_predictions_normalized = all_predictions #torch.asinh(all_predictions)
-        lower_model_pred_normalized = lower_model_pred #torch.asinh(lower_model_pred)
+        all_predictions_normalized = torch.asinh(all_predictions)
+        lower_model_pred_normalized = torch.asinh(lower_model_pred)
 
         print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
         print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
@@ -470,7 +469,14 @@ class BAL():
         print("Random candidates found")
         return candidates[random_idxs[:self.cfg.new_sample_size]]
     
-    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=1, strata_weights=[1]):
+    def get_initial_dataset(self, poolSize):
+        candidates = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+
+        random_idxs = torch.randperm(candidates.shape[0])
+        print("Random candidates found")
+        return candidates[random_idxs[:self.cfg.initial_training_size]]
+    
+    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
         diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True)
@@ -511,7 +517,28 @@ class BAL():
     
     #TODO: Implement based on Lucas changes to DIRECT
     def direct_sample(self, candidates, trainer, lowerTrainer):
-        pass
+        
+        directWrapper = DIRECT(lowerTrainer, trainer)
+
+        num_classes = 5
+        classify_func = directWrapper.log_mse
+
+        # getting the train data
+        # train_inputs = list(self.dataset)
+        train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        print(f"train inputs are {train_inputs.shape}")
+        train_labels = directWrapper.annotate(train_inputs, classify_func, num_classes)
+
+        train_data = (train_inputs, train_labels)
+        print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
+
+        print(f"candidates shape is {candidates.shape}")
+        print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
+        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func)
+
+        return newCandidates
+        
 
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """
