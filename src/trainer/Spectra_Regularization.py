@@ -69,9 +69,28 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         if self.normalize_mse_loss:
             gt_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(gt_flux_per_ky_trans, accumulate=False)
             pred_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(pred_flux_per_ky_trans, accumulate=False)
-        
+
         # Compute loss only on those kys
         flux_per_ky_loss = mean_squared_loss(gt_flux_per_ky_trans, pred_flux_per_ky_trans)
+
+        # altered to only train on the per ky loss
+        return flux_per_ky_loss
+    
+    def rmlse(self, data):
+        # get pred fluxes, always in real
+        pred_flux_per_ky = self.get_pred(data)
+        # get gt fluxes, aways in real
+        _, gt_flux_per_ky = self.get_input_target(data)
+
+        # transform fluxes accordigly, asinh is must, then normalize if needed
+        gt_flux_per_ky_trans = torch.asinh(gt_flux_per_ky)
+        pred_flux_per_ky_trans = torch.asinh(pred_flux_per_ky)
+        if self.normalize_mse_loss:
+            gt_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(gt_flux_per_ky_trans, accumulate=False)
+            pred_flux_per_ky_trans = self.model._targetNormalizerPerWavenumber(pred_flux_per_ky_trans, accumulate=False)
+        
+        # Compute loss only on those kys
+        flux_per_ky_loss = torch.mean(mean_squared_logarithmic_error(gt_flux_per_ky_trans, pred_flux_per_ky_trans))
 
         # altered to only train on the per ky loss
         return flux_per_ky_loss
@@ -130,8 +149,23 @@ class Spectra_Regularization_Trainer(Base_Trainer):
             # For calculate losses
             loss = self.get_loss(data)
             losses.append(loss)
-        return sum(losses) / len(losses)
 
+        return sum(losses) / len(losses)
+    
+    def get_test_rmsle(self, dataloader):
+        """
+        Calculate loss
+
+        Args:
+            dataloader: The data loader to get data.
+        """
+        losses = []
+        for data in dataloader:
+            data = self.move_to_device(data)
+            loss = self.rmlse(data)
+            losses.append(loss)
+        return torch.sqrt(sum(losses)/ len(losses))
+    
     def get_metrics(self, data):
         # move to device
         data = self.move_to_device(data)

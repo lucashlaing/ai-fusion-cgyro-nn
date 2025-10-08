@@ -52,14 +52,9 @@ def run_train(cfg):
     # For the last iteration, train but do not run further BAL
     num_iter = cfg.bal.iterations + 2
 
-<<<<<<< HEAD
-    test_losses = np.zeros(shape=(num_iter))
-    test_rmsle = np.zeros(shape=(num_iter))
-    num_acquired_samples = np.zeros(shape=(num_iter))
-=======
     test_losses = []
+    test_rmsle = np.zeros(shape=(num_iter))
     num_acquired_samples = []
->>>>>>> 6ba7affdc83b6941adaca8ef0c1148ef57cb615c
 
     # Load model for freezing and comparison
     baseModel = MODEL_HANDLER["SR"](cfg.model)
@@ -147,7 +142,6 @@ def run_train(cfg):
             collate_fn=ragged_collate,
         )
 
-
         # Infinite data loopers for training and testing
         train_loopers = InfiniteDataLooper(train_loader)
 
@@ -220,12 +214,9 @@ def run_train(cfg):
         print(f'Test RMSLE: {test_rmsle[i]}')
         print(f'Base Model RMSLE: {base_rmsle}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
-<<<<<<< HEAD
     
-=======
         if cfg.board:
             wandb.log({"BAL_test_loss": current_test_loss})
->>>>>>> 6ba7affdc83b6941adaca8ef0c1148ef57cb615c
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
         
         # Last iteration (or pool empty), do not run BAL, only train
