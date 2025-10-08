@@ -50,6 +50,7 @@ def run_train(cfg):
     num_iter = cfg.bal.iterations + 2
 
     test_losses = np.zeros(shape=(num_iter))
+    test_rmsle = np.zeros(shape=(num_iter))
     num_acquired_samples = np.zeros(shape=(num_iter))
 
     # Load model for freezing and comparison
@@ -125,10 +126,13 @@ def run_train(cfg):
         print("Training starts...")
         for _ in tqdm(range(total_steps + 1)):
             # If first BAL iteration, compute test loss and get new samples before training
-            if i == 0:
-                break
+            # if i == 0:
+            #     break
             train_data = next(train_loopers)
 
+            if torch.isnan(train_data[0]).any():
+                print(f'Train data contains NaN, skipping')
+                continue
             # Log loss
             if (
                 (trainer.train_step % cfg.loss_freq == 0)
@@ -164,10 +168,14 @@ def run_train(cfg):
         # Plot / log losses
         test_losses[i] = trainer.get_test_loss(test_loader)
         base_loss = base_trainer.get_test_loss(test_loader)
-        print(f'Test Loss: {test_losses[i]}')
-        print(f'Base Model Test Loss: {base_loss}')
+        test_rmsle[i] = trainer.get_test_rmsle(test_loader)
+        base_rmsle = base_trainer.get_test_rmsle(test_loader)
+        print(f'Test MSE: {test_losses[i]}')
+        print(f'Base Model MSE: {base_loss}')
+        print(f'Test RMSLE: {test_rmsle[i]}')
+        print(f'Base Model RMSLE: {base_rmsle}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
-
+    
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
         
         # Last iteration (or pool empty), do not run BAL, only train
@@ -192,6 +200,8 @@ def run_train(cfg):
             if idx is not None:
                 # mark the new candidates as used from our pool
                 found_input = full_sample[0]
+                if torch.isnan(found_input).any():
+                    print(f'Warning: acquired candidate with NaN element(s)')
                 if pool_tracker.is_used(found_input):
                     print(f'Warning: acquired duplicate candidates')
                     continue
