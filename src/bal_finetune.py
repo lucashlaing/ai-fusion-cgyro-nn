@@ -53,14 +53,14 @@ def run_train(cfg):
     num_iter = cfg.bal.iterations + 2
 
     test_losses = []
-    test_rmsle = np.zeros(shape=(num_iter))
+    test_rmsle = []
     num_acquired_samples = []
 
     # Load model for freezing and comparison
     baseModel = MODEL_HANDLER["SR"](cfg.model)
     checkpoint_path = cfg.checkpoint_path
     load_prev_model(baseModel, checkpoint_path)
-    
+
     # Trainer creation
     base_trainer = TRAINER_HANDLER[project_name](baseModel, cfg.model, cfg.opt, cfg.dataset, tc_rng)
     
@@ -91,7 +91,6 @@ def run_train(cfg):
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
     
-
     print(f'Acquiring initial train dataset')
     full_dataset_list = list(full_dataset)  
     print(f'Pool size: {len(full_dataset_list)}')
@@ -122,8 +121,6 @@ def run_train(cfg):
     save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
-
-
         # Load model for finetuning
         model =  MODEL_HANDLER["SR"](cfg.model)
         load_prev_model(model, checkpoint_path)
@@ -191,7 +188,7 @@ def run_train(cfg):
                 trainer.save(ckpt_dir)
 
             # Training iteration
-            trainer.iter(train_data)
+            # trainer.iter(train_data)
 
             # Time estimation
             if trainer.train_step == cfg.time_warm:
@@ -207,7 +204,7 @@ def run_train(cfg):
             current_test_loss = current_test_loss.detach().cpu().item()
         test_losses.append(current_test_loss)
         base_loss = base_trainer.get_test_loss(test_loader)
-        test_rmsle[i] = trainer.get_test_rmsle(test_loader)
+        test_rmsle.append(trainer.get_test_rmsle(test_loader))
         base_rmsle = base_trainer.get_test_rmsle(test_loader)
         print(f'Test MSE: {test_losses[i]}')
         print(f'Base Model MSE: {base_loss}')

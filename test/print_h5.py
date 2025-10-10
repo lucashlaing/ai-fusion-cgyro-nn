@@ -3,6 +3,7 @@ import os
 import glob
 import numpy as np
 import pandas as pd
+import argparse
 
 def summarize_distribution(name, data):
     """Compute stats and flag big outliers for any dataset."""
@@ -23,7 +24,7 @@ def summarize_distribution(name, data):
         print(f"  Example outliers: {outliers.head(10).tolist()}")
 
 def extract_and_analyze_h5(h5_dir, save_to_csv=True):
-    h5_files = glob.glob(os.path.join(h5_dir, "*.h5"))
+    h5_files = glob.glob(os.path.join(h5_dir, "**/*.h5"), recursive=True)
     if not h5_files:
         print(f"No .h5 files found in {h5_dir}")
         return
@@ -89,9 +90,11 @@ def extract_and_analyze_h5(h5_dir, save_to_csv=True):
         except Exception as e:
             print(f"  Failed to process {file}: {e}")
 
-def main():
-    h5_dir = "./test_data/pool/"
-    extract_and_analyze_h5(h5_dir, save_to_csv=True)
-
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", "--directory")
+
+    args = parser.parse_args()
+    dir = args.directory
+
+    extract_and_analyze_h5(dir, save_to_csv=False)

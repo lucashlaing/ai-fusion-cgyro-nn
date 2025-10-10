@@ -48,8 +48,8 @@ class BaseDataPipe(IterableDataset):
         """
         print("getting file list:")
         print(self.data_dir)
-        print(glob.glob(os.path.join(self.data_dir, "*.h5")))
-        return glob.glob(os.path.join(self.data_dir, "*.h5"))
+        print(glob.glob(os.path.join(self.data_dir, "**/*.h5"), recursive=True))
+        return glob.glob(os.path.join(self.data_dir, "**/*.h5"), recursive=True)
 
     def _read_path(self, file_path):
         """

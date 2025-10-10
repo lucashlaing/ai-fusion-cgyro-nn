@@ -7,11 +7,12 @@ import h5py
 
 
 class Spectra_Regularization_DataPipe(BaseDataPipe):
-    def __init__(self, cfg, num_workers, base_seed, mode):
+    def __init__(self, cfg, num_workers, base_seed, mode, has_fail_mask=True):
         super().__init__(cfg, num_workers, base_seed, mode)
         
-        self.is_filtering_ky = mode != 'pool'
+        self.is_filtering_ky = False #mode != 'pool'
         self.is_filtering_nans = True # enabled by default, but with warnings
+        self.has_fail_mask = has_fail_mask
 
     def _read_path(self, file_path):
         print(f'Datapipe processing file: {file_path}')
@@ -36,7 +37,7 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
             for key in intermediate_target_keys:
                 flux_spectrum = np.array(f[key])  # (size, nky, 2, nf, ns, 5)
 
-                assert flux_spectrum.shape[2] == 2, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
+                assert flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
 
                 # Option 1: Select the first index at dim=2 (assuming it’s always the useful one)
                 flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (size, nky, nf, ns, 5)
@@ -53,7 +54,10 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
                 intermediate_target_list.append(summed_flux_spectrum)
             
             # get the failed mask containing which kys failed
-            failed_mask = np.array(f[failed_mask_key])
+            if self.has_fail_mask:
+                failed_mask = np.array(f[failed_mask_key])
+            else:
+                failed_mask = np.zeros(shape=(summed_flux_spectrum.shape[0], summed_flux_spectrum.shape[1]))
 
         # Stack data and convert to tensors
         input_data = np.stack(input_list, axis=1)
