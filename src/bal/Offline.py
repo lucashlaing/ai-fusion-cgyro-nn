@@ -73,8 +73,10 @@ class Offline(BAL):
         # Randomly pick indices from the unused set
         chosen_entries = random.sample(unused_entries, n_samples)
         candidates = []
-        for input_tensor, _ in chosen_entries:
+        outputs = [] # ADDED FOR OFFLINE TGFLF SINN
+        for input_tensor, output_tensor in chosen_entries:
             candidates.append(input_tensor)
+            outputs.append(output_tensor) # ADDED FOR OFFLINE TGLF SINN
         
         # appends them rather than stack it
-        return torch.cat(candidates, dim=0) # Shape: (n * ky, 32)
+        return (torch.cat(candidates, dim=0), torch.cat(outputs, dim=0)) # Shape: (n * ky, 32)

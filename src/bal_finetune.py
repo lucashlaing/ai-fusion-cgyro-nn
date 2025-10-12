@@ -44,7 +44,7 @@ def run_train(cfg):
     print("stamp: {}".format(time_stamp))
 
     project_name = cfg.project
-    full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool", False)
     pool_tracker = UsageTracker()
 
     # Number of iterations to train / run BAL
@@ -64,7 +64,7 @@ def run_train(cfg):
     # Trainer creation
     base_trainer = TRAINER_HANDLER[project_name](baseModel, cfg.model, cfg.opt, cfg.dataset, tc_rng)
     
-    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test", False)
     test_loader = DataLoader(
             test_datapipe,
             batch_size=cfg.batch,
@@ -89,7 +89,7 @@ def run_train(cfg):
 
     # set up initial training set
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker) 
     
     print(f'Acquiring initial train dataset')
     full_dataset_list = list(full_dataset)  

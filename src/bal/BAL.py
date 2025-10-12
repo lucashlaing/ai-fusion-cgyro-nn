@@ -435,7 +435,7 @@ class BAL():
             return mean_flux, torch.arange(0, mean_flux.shape[0])
     
     def propose_samples(self, trainer, lowerTrainer):
-        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features) or tuple for Offline
         print("Candidates found")
 
         proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
@@ -470,7 +470,7 @@ class BAL():
         return candidates[random_idxs[:self.cfg.new_sample_size]]
     
     def get_initial_dataset(self, poolSize):
-        candidates = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        candidates, outputs = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
 
         random_idxs = torch.randperm(candidates.shape[0])
         print("Random candidates found")
@@ -515,7 +515,6 @@ class BAL():
         print(f'EIG Strat Proposed Samples have NaN: {torch.isnan(proposed_samples).any()}')
         return proposed_samples[1:] #remove first element, as it is a zero tensor
     
-    #TODO: Implement based on Lucas changes to DIRECT
     def direct_sample(self, candidates, trainer, lowerTrainer):
         
         directWrapper = DIRECT(lowerTrainer, trainer)
@@ -526,16 +525,19 @@ class BAL():
         # getting the train data
         # train_inputs = list(self.dataset)
         train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        train_outputs = torch.cat([x[1] for x in self.dataset], dim=0)
         print(f"train inputs are {train_inputs.shape}")
-        train_labels = directWrapper.annotate(train_inputs, classify_func, num_classes)
+        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes)
 
         train_data = (train_inputs, train_labels)
         print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
 
-        print(f"candidates shape is {candidates.shape}")
+        print(f"candidates shape is {candidates[0].shape}")
         print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
-        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
-        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func)
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs):
+        # candidates is already a tuple of (inputs, outputs) from Offline.sample_candidates
+        # Pass ground truth training outputs for TGLF-SiNN data
+        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func, train_outputs)
 
         return newCandidates
         

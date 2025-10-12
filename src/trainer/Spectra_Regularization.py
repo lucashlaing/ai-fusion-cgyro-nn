@@ -67,8 +67,8 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # gt_flux_per_ky_norm = self.model._targetNormalizerPerWavenumber(gt_flux_per_ky, accumulate=False)
         # pred_flux_per_ky_norm = self.model._targetNormalizerPerWavenumber(pred_flux_per_ky, accumulate=False)
 
-        print(f'Predicted flux per ky norm: {pred_flux_per_ky}')
-        print(f'True flux per ky norm: {gt_flux_per_ky}')
+        # print(f'Predicted flux per ky norm: {pred_flux_per_ky}')
+        # print(f'True flux per ky norm: {gt_flux_per_ky}')
         # transform fluxes accordigly, asinh is must, then normalize if needed
         gt_flux_per_ky_trans = torch.asinh(gt_flux_per_ky)
         pred_flux_per_ky_trans = torch.asinh(pred_flux_per_ky)

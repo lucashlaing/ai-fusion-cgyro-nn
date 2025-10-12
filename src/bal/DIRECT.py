@@ -41,16 +41,18 @@ class DIRECT():
         Classifies inputs based on log ratio of TGLF to CGYRO outputs corresponding to that input.
 
         Args:
-            candidates (Tensor): Input candidate tensor
-            tglf_out (Tensor): TGLF output tensor (summed)
-            cgyro_out (Tensor): CGYRO output tensor (summed)
+            candidates (tuple): Tuple of (input_candidates, output_candidates) for TGLF-SiNN data
             num_classes (Tensor): Total number of classes to separate into
+            mean (float): Mean for standardization
+            std (float): Standard deviation for standardization
 
         Returns:
             labels (Tensor): Labels corresponding to inputs
         """
-        tglf_out = self.get_predictions(candidates, self.tglf_trainer.model)
-        cgyro_out = self.get_predictions(candidates, self.cgyro_trainer.model)
+        # For TGLF-SiNN data, use ground truth outputs instead of TGLF model predictions
+        candidates_input, candidates_output = candidates
+        tglf_out = candidates_output  # Use ground truth as TGLF output
+        cgyro_out = self.get_predictions(candidates_input, self.cgyro_trainer.model)
         deltas = torch.sum(torch.abs(((tglf_out ** 2) - (cgyro_out ** 2))), dim=1)
 
         # Standardize deltas -> z-scores
@@ -73,8 +75,9 @@ class DIRECT():
         the grossness of the low-level input-label pairing in the rest of the pipeline.
 
         Args:
-            candidates (Tensor): Input candidate tensor
+            candidates (Tensor or tuple): Input candidate tensor or tuple of (inputs, outputs) for TGLF-SiNN data
             classify_func (Function): Function that takes as arguments (candidates, **kwargs) and returns labels (e.g. log_ratio above)
+            num_classes (int): Number of classes for classification
             (Optional) kwargs: Keyword arguments to pass to classify_func
 
         Returns:
@@ -89,7 +92,7 @@ class DIRECT():
         upper_loss = (train_labels[pivot_idx:] == class_idx).sum() # everything rihgt of pivot should not be class_idx
         return lower_loss + upper_loss
 
-    def vreduce(self, sorted_inputs, sorted_labels, candidate_mask, budget, class_idx, B_parallel, num_classes, classify_func):
+    def vreduce(self, sorted_inputs, sorted_labels, candidate_mask, budget, class_idx, B_parallel, num_classes, classify_func, sorted_outputs=None):
         
         N_total = sorted_inputs.shape[0]
         print(f'Label shape: {sorted_labels.shape}')
@@ -146,7 +149,11 @@ class DIRECT():
             ]
 
             samples = sorted_inputs[sampled_idxs]
-            labels = self.annotate(samples, classify_func, num_classes)
+            if sorted_outputs is not None:
+                sample_outputs = sorted_outputs[sampled_idxs]
+                labels = self.annotate((samples, sample_outputs), classify_func, num_classes)
+            else:
+                labels = self.annotate(samples, classify_func, num_classes)
             if labels.ndim == 1:
                 labels = labels.unsqueeze(1)
 
@@ -187,7 +194,7 @@ class DIRECT():
                 max_j = j
         return max_j
     
-    def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes):
+    def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes, sorted_outputs=None):
 
         N_total = sorted_inputs.shape[0]
 
@@ -257,7 +264,11 @@ class DIRECT():
 
         # Annotate selected inputs
         samples = sorted_inputs[sampled_idxs]
-        labels = self.annotate(samples, classify_func, num_classes)
+        if sorted_outputs is not None:
+            sample_outputs = sorted_outputs[sampled_idxs]
+            labels = self.annotate((samples, sample_outputs), classify_func, num_classes)
+        else:
+            labels = self.annotate(samples, classify_func, num_classes)
         if labels.ndim == 1:
             labels = labels.unsqueeze(1)
 
@@ -267,17 +278,19 @@ class DIRECT():
 
         return sorted_inputs, sorted_labels, candidate_mask
     
-    def direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
+    def direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs=None):
         """
         Expected train_data shape: (N_ky_samples, 32)
-        Expected candidate shape: (N_candidates, 32)
+        Expected candidates shape: tuple of (candidates_inputs, candidates_outputs)
+        Expected train_outputs: ground truth outputs for training data (optional)
         """
         train_inputs, train_labels = train_data
 
         N_train = train_inputs.shape[0]
-        N_candidates = candidates.shape[0]
+        candidates_inputs, candidates_outputs = candidates
+        N_candidates = candidates_inputs.shape[0]
 
-        all_inputs = torch.concatenate([train_inputs, candidates], dim=0)
+        all_inputs = torch.concatenate([train_inputs, candidates_inputs], dim=0)
         # Concat labels s.t. all candidates have their labels initialized to -1, as they are currently unlabeled
         all_labels = torch.concatenate([train_labels, torch.full(size=(N_candidates, 1), fill_value= -1)], dim=0)
         print(f'All inputs shape: {all_inputs.shape}')
@@ -290,7 +303,16 @@ class DIRECT():
         
         # NO ASINH SINCE SO SMALL DIFF
         cgyro_all_predictions = self.get_predictions(all_inputs, self.cgyro_trainer.model)
-        tglf_all_predictions = self.get_predictions(all_inputs, self.tglf_trainer.model)
+        
+        # For TGLF-SiNN data, use ground truth outputs for both training and candidates
+        if train_outputs is not None:
+            # Use provided ground truth outputs for training data
+            all_outputs = torch.concatenate([train_outputs, candidates_outputs], dim=0)
+        else:
+            # Fallback to TGLF model predictions for training data
+            train_outputs_pred = self.get_predictions(train_inputs, self.tglf_trainer.model)
+            all_outputs = torch.concatenate([train_outputs_pred, candidates_outputs], dim=0)
+        tglf_all_predictions = all_outputs
         
         # Expected predictions shape: (N_ky_samples, 4)
         pred_mse = torch.sum(torch.abs((cgyro_all_predictions ** 2) - (tglf_all_predictions ** 2)), dim=1) # expected shape: (N_ky_samples)
@@ -299,6 +321,7 @@ class DIRECT():
         sorted_idxs = pred_mse.argsort()
         sorted_inputs = all_inputs[sorted_idxs, :]
         sorted_labels = all_labels[sorted_idxs, :]
+        sorted_outputs = all_outputs[sorted_idxs, :]  # Sort outputs to match inputs
         # create masks
         candidate_mask = is_candidate[sorted_idxs] # (N_train + N_candidates,) boolean values
         original_candidate_mask = candidate_mask.clone()
@@ -315,7 +338,8 @@ class DIRECT():
                     k, 
                     B_parallel, 
                     num_classes, 
-                    classify_func
+                    classify_func,
+                    sorted_outputs
                 )
         # Spend the rest of the budget on estimating optimal separation threshold and annotating near it
         new_inputs = sorted_inputs[~candidate_mask]
@@ -341,6 +365,7 @@ class DIRECT():
                     k,
                     classify_func,
                     num_classes,
+                    sorted_outputs
                 )
 
         # Build final picked mask: those indices that were originally candidates and now are not candidates
@@ -371,6 +396,9 @@ if __name__ == "__main__":
     train_data = torch.rand(size=(N_train_samples, 32))
     train_labels = torch.floor(torch.rand(size=(N_train_samples, 1)) * num_classes).int()
     train = train_data, train_labels
-    candidates = torch.rand(size=(N_candidates, 32))
-    bal = DIRECT()
-    bal.direct(train, candidates, None, None, num_classes, B_train, B_parallel, bal.log_mse)
+    candidates_inputs = torch.rand(size=(N_candidates, 32))
+    candidates_outputs = torch.rand(size=(N_candidates, 4))
+    candidates = (candidates_inputs, candidates_outputs)
+    train_outputs = torch.rand(size=(N_train_samples, 4))
+    bal = DIRECT(None, None)  # Mock trainers
+    bal.direct(train, candidates, num_classes, B_train, B_parallel, bal.log_mse, train_outputs)
