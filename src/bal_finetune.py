@@ -265,6 +265,7 @@ def run_train(cfg):
             if pool_tracker.is_used(full_input):
                 print(f'Warning: acquired duplicate candidates')
                 continue
+            print("saved 1 sample")
             new_samples_full.append((full_input, full_target))
             pool_tracker.mark_used(full_input)
 
