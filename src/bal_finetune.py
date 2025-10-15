@@ -48,9 +48,8 @@ def run_train(cfg):
     pool_tracker = UsageTracker()
 
     # Number of iterations to train / run BAL
-    # For the first iteration, do not train (no acquired data), only compute test loss and run BAL
     # For the last iteration, train but do not run further BAL
-    num_iter = cfg.bal.iterations + 2
+    num_iter = cfg.bal.iterations + 1
 
     test_losses = []
     test_rmsle = []
@@ -82,6 +81,8 @@ def run_train(cfg):
             config=OmegaConf.to_container(cfg, resolve=True),
             name=f"{time_stamp}_BAL_{cfg.bal.acquisition_function}"
         )
+        wandb.define_metric("BAL/iteration") # specific counter for BAL
+        wandb.define_metric("BAL/*", step_metric="BAL/iteration")
         with open_dict(cfg):
             cfg.run_id = wandb.run.id
             cfg.entity = wandb.run.entity
@@ -100,30 +101,42 @@ def run_train(cfg):
     # Add the new candidates to our train folder
     train_dir = os.path.join(cfg.dataset.dataset_root, "train")
     new_samples_full = []
+    ### WE SHOULD GRAB FROM CANDIDATES FILE
+    candidate_file = os.path.join(train_dir, "candidates.h5")
+    with h5py.File(candidate_file, "r") as f:
+        candidate_inputs = np.array(f["inputs"])
+        candidate_sample_idx = np.array(f["sample_idx"])
+
+    new_samples_full = []
     for j in range(new_samples.shape[0]):
-        sample = new_samples[j,:]
-        idx, full_sample = find_in_dataset(full_dataset_list, sample)
-        if idx is not None:
-            # mark the new candidates as used from our pool
-            found_input = full_sample[0]
-            if pool_tracker.is_used(found_input):
-                print(f'Warning: acquired duplicate candidates')
-                continue
-            pool_tracker.mark_used(found_input)
-            new_samples_full.append(full_sample)
-            print(f'Saved new sample')
-        else:
-            print(f'Query could not be matched in pool')
+        sample = new_samples[j, :].detach().cpu().numpy()
 
-    total_num_samples = len(new_samples_full)
-    print(f'Number of acquired samples for initial train: {total_num_samples}')
+        # Find where this selected ky came from
+        match_idx = np.where(np.all(np.isclose(candidate_inputs, sample, atol=1e-8, rtol=1e-8), axis=1))[0]
+        if len(match_idx) == 0:
+            print("⚠️ Candidate not found in candidate file.")
+            continue
+        matched_idx = match_idx[0]
+        pool_sample_idx = candidate_sample_idx[matched_idx]
 
-    save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
+        # Use those indices to fetch full sample directly
+        full_input, full_target = full_dataset_list[pool_sample_idx][0:2]
+        if pool_tracker.is_used(full_input):
+            print(f'Warning: acquired duplicate candidates')
+            continue
+        new_samples_full.append((full_input, full_target))
+        print(full_input.shape)
+        pool_tracker.mark_used(full_input)
+
+    print(f"✅ Retrieved {len(new_samples_full)} full samples from candidate file.")
+    os.remove(candidate_file)
+    print("Candidate file deleted successfully")
+    bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
         # Load model for finetuning
         model =  MODEL_HANDLER["SR"](cfg.model)
-        load_prev_model(model, checkpoint_path)
+        # load_prev_model(model, checkpoint_path)
         
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
 
@@ -213,7 +226,7 @@ def run_train(cfg):
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
     
         if cfg.board:
-            wandb.log({"BAL_test_loss": current_test_loss})
+            wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
         
         # Last iteration (or pool empty), do not run BAL, only train
@@ -230,22 +243,50 @@ def run_train(cfg):
         new_samples_full = []
         full_dataset_list = list(full_dataset)  
         print(f'Pool size: {len(full_dataset_list)}')
+        candidate_file = os.path.join(train_dir, "candidates.h5")
+        with h5py.File(candidate_file, "r") as f:
+            candidate_inputs = np.array(f["inputs"])
+            candidate_sample_idx = np.array(f["sample_idx"])
+
+        new_samples_full = []
         for j in range(new_samples.shape[0]):
-            sample = new_samples[j,:]
-            idx, full_sample = find_in_dataset(full_dataset_list, sample)
-            if idx is not None:
-                # mark the new candidates as used from our pool
-                found_input = full_sample[0]
-                if torch.isnan(found_input).any():
-                    print(f'Warning: acquired candidate with NaN element(s)')
-                if pool_tracker.is_used(found_input):
-                    print(f'Warning: acquired duplicate candidates')
-                    continue
-                pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)
-                print(f'Saved new sample')
-            else:
-                print(f'Query could not be matched in pool')
+            sample = new_samples[j, :].detach().cpu().numpy()
+
+            # Find where this selected ky came from
+            match_idx = np.where(np.all(np.isclose(candidate_inputs, sample, atol=1e-8, rtol=1e-8), axis=1))[0]
+            if len(match_idx) == 0:
+                print("⚠️ Candidate not found in candidate file.")
+                continue
+            matched_idx = match_idx[0]
+            pool_sample_idx = candidate_sample_idx[matched_idx]
+
+            # Use those indices to fetch full sample directly
+            full_input, full_target = full_dataset_list[pool_sample_idx][0:2]
+            if pool_tracker.is_used(full_input):
+                print(f'Warning: acquired duplicate candidates')
+                continue
+            new_samples_full.append((full_input, full_target))
+            pool_tracker.mark_used(full_input)
+
+        print(f"✅ Retrieved {len(new_samples_full)} full samples from candidate file.")
+        os.remove(candidate_file)
+        print("Candidate file deleted successfully")
+        # for j in range(new_samples.shape[0]):
+        #     sample = new_samples[j,:]
+        #     idx, full_sample = find_in_dataset(full_dataset_list, sample)
+        #     if idx is not None:
+        #         # mark the new candidates as used from our pool
+        #         found_input = full_sample[0]
+        #         if torch.isnan(found_input).any():
+        #             print(f'Warning: acquired candidate with NaN element(s)')
+        #         if pool_tracker.is_used(found_input):
+        #             print(f'Warning: acquired duplicate candidates')
+        #             continue
+        #         pool_tracker.mark_used(found_input)
+        #         new_samples_full.append(full_sample)
+        #         print(f'Saved new sample')
+        #     else:
+        #         print(f'Query could not be matched in pool')
 
         num_acq = len(new_samples_full)
         num_acquired_samples.append(num_acq)
@@ -253,10 +294,10 @@ def run_train(cfg):
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
         total_num_samples += num_acq
         if cfg.board:
-            wandb.log({"num of samples": num_acq})
-            wandb.log({"total samples": total_num_samples})
+            wandb.log({"BAL/iteration": i, "BAL/num_samples": num_acq})
+            wandb.log({"BAL/iteration": i, "BAL/total_samples": total_num_samples})
 
-        save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
+        bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
     if cfg.board:
         wandb.finish()
@@ -321,114 +362,6 @@ def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
                 return idx, (input_data[j], target_flux_per_ky[j])
     return None, None
 
-
-def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="new_data.h5"):
-    """
-    Save new dataset samples into an HDF5 file in the same format as the original dataset.
-
-    Parameters
-    ----------
-    dataset_cfg : omegaconf.DictConfig
-        Dataset config with input_keys, target_keys, spectra_function_keys, intermediate_target_keys, mask_key, etc.
-    new_samples_full : list of tuples
-        List of full dataset entries, where each entry is
-        (input_tensor, target_flux_per_ky, target_flux, failed_mask_tensor).
-    save_dir : str
-        Directory where the .h5 file will be written.
-    filename : str
-        Name of the new HDF5 file.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, filename)
-
-    inputs = []
-    targets = []
-    flux_per_ky = []
-    masks = []
-
-    for inp, t_flux_per_ky in new_samples_full:
-        # Each inp shape: (nky, features) — includes input features + ky values
-        input = inp.cpu().numpy()
-        inputs.append(input)
-
-        mask = input[-1] == 0
-        masks.append(mask)
-
-        t_flux_per_ky = t_flux_per_ky.cpu().numpy()
-        flux_per_ky.append(t_flux_per_ky)
-
-    inputs = np.array(inputs)       # (n_samples, n_features)
-    flux_per_ky = np.array(flux_per_ky)  # (n_samples, 4)
-    masks = np.array(masks)          # (n_samples)
-
-    # Unsqueeze dim=1 for nky=1
-    inputs = inputs[:, np.newaxis, :] # (n_samples, nky, n_features)
-    flux_per_ky = flux_per_ky[:, np.newaxis, :] # (n_samples, nky, 4)
-    masks = masks[:, np.newaxis] # (n_samples, nky)
-
-    n_samples, nky, n_features = inputs.shape
-
-    # Flux target keys
-    target_keys = [
-        "OUT_G_elec",   # fluxes[:, 0]
-        "OUT_Q_elec",   # fluxes[:, 1]
-        "OUT_Q_ions",   # fluxes[:, 2]
-        "OUT_P_ions",   # fluxes[:, 3]
-    ]
-
-    with h5py.File(save_path, "w") as f:
-        # Split input features (everything except last column = ky)
-        input_features = inputs[:, 0, :-1]  # (n_samples, n_input_features)
-        ky_values = inputs[:, :, -1]        # (n_samples, nky)
-
-        # Save input features
-        for i, key in enumerate(dataset_cfg.input_keys):
-            f.create_dataset(key, data=input_features[:, i])
-
-        # Save spectra function keys (ky)
-        for i, key in enumerate(dataset_cfg.spectra_function_keys):
-            if key == "ky":
-                f.create_dataset(key, data=ky_values)
-
-        # Save intermediate target (reconstruct sumf-like tensor)
-        if len(dataset_cfg.intermediate_target_keys) > 0:
-            n_samples, nky, _ = flux_per_ky.shape
-            ns = 3  # electrons + 2 ions
-            nf = 2  # fields
-
-            sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5)) #nky = 1
-
-            for slice_idx in range(2):
-                # electrons
-                sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = flux_per_ky[:, :, 0] / nf
-                sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = flux_per_ky[:, :, 0] / nf
-                sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = flux_per_ky[:, :, 1] / nf
-                sumf_reconstructed[:, :, slice_idx, 1, 0, 1] = flux_per_ky[:, :, 1] / nf
-
-                n_ion_species = ns - 1
-                q_ions = flux_per_ky[:, :, 2] / (n_ion_species * nf)
-                p_ions = flux_per_ky[:, :, 3] / (n_ion_species * nf)
-
-                for field_idx in range(nf):
-                    for ion_idx in range(1, ns):
-                        sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-                        sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
-
-            f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
-
-        # Meta group
-        meta_grp = f.create_group("meta")
-        meta_grp.create_dataset(dataset_cfg.mask_key, data=masks)
-        total_count_arr = np.full((n_samples,), nky, dtype=np.int32) #nky = 1
-        meta_grp.create_dataset("total_count", data=total_count_arr)
-
-        for key in f.keys():
-            if key == "fluxes":
-                flux_arr = f["fluxes"][:]
-                # Split into separate 1D arrays
-                for i, name in enumerate(target_keys):
-                    f.create_dataset(name, data=flux_arr[:, i])
-    return save_path
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):

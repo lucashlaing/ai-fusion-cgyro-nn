@@ -435,7 +435,8 @@ class BAL():
             return mean_flux, torch.arange(0, mean_flux.shape[0])
     
     def propose_samples(self, trainer, lowerTrainer):
-        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features) or tuple for Offline
+        train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features) or tuple for Offline
         print("Candidates found")
 
         proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
@@ -470,7 +471,8 @@ class BAL():
         return candidates[random_idxs[:self.cfg.new_sample_size]]
     
     def get_initial_dataset(self, poolSize):
-        candidates, outputs = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+        train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        candidates, outputs = self.sample_candidates(poolSize, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features)
 
         random_idxs = torch.randperm(candidates.shape[0])
         print("Random candidates found")
