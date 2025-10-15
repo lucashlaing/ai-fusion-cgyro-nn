@@ -45,7 +45,7 @@ class Offline(BAL):
                     # store (input, target, sample_idx)
                     unused_entries.append((params[np.newaxis, :], t_flux[np.newaxis, :], sample_idx))
                     if return_full:
-                        full_samples.append((inputs, targets, sample_idx))
+                        full_samples.append(d)
 
         return (unused_entries, full_samples) if return_full else unused_entries
 
@@ -82,28 +82,27 @@ class Offline(BAL):
         # Randomly pick indices from the unused set
         chosen_idx = random.sample(range(len(unused_entries)), n_samples)
         chosen_entries = [unused_entries[i] for i in chosen_idx]
-       
+        chosen_full_samples = [full_samples[i] for i in chosen_idx] # has the full samples(nky, 32) for each entry(1, 32)
+
         candidates = []
         outputs = [] # ADDED FOR OFFLINE TGFLF SINN
         for input_tensor, output_tensor,_ in chosen_entries:
             candidates.append(input_tensor)
             outputs.append(output_tensor) # ADDED FOR OFFLINE TGLF SINN
         
-        # These track where the candidate came from
-        candidate_metadata = []
-        for i in chosen_idx:
-            sample_idx = full_samples[i][2]  # getting which index it is in pool
-            candidate_metadata.append({"sample_idx": sample_idx})
-
-        # Save to candidate file
         if save_dir is not None:
-            candidate_file = os.path.join(save_dir, "candidates.h5")
-            with h5py.File(candidate_file, "w") as f:
-                f.create_dataset("inputs", data=torch.cat([u[0] for u in chosen_entries]).numpy())
-                f.create_dataset("outputs", data=torch.cat([u[1] for u in chosen_entries]).numpy())
-                f.create_dataset("sample_idx", data=np.array([m["sample_idx"] for m in candidate_metadata]))
-            print(f"✅ Saved candidate file to {candidate_file}")
+            os.makedirs(save_dir, exist_ok=True)
+            candidate_path = os.path.join(save_dir, "candidates.h5")
 
+            print(f"Saving {len(chosen_full_samples)} full candidates to {candidate_path}")
+
+            # Use your same save function — no logic change
+            self.save_new_samples_as_h5(
+                self.run_cfg.dataset,
+                chosen_full_samples,
+                save_dir,
+                filename="candidates.h5"
+            )
         # appends them rather than stack it
         final_candidates = torch.cat(candidates, dim=0), torch.cat(outputs, dim=0)
 
@@ -216,3 +215,49 @@ class Offline(BAL):
                     for i, name in enumerate(target_keys):
                         f.create_dataset(name, data=flux_arr[:, i])
         return save_path
+    
+    def read_h5_dataset(self, file_path, cfg, has_fail_mask=True):
+        """
+        Reuses the same logic as our dataset classes to read dataset content properly.
+        Used in cases where we dont want to use Dataloader and spend time
+        Returns (combined_matrix, target_flux_per_ky).
+        """
+        input_keys = cfg.input_keys
+        target_keys = cfg.target_keys
+        spectra_function_keys = cfg.spectra_function_keys
+        intermediate_target_keys = cfg.intermediate_target_keys
+        failed_mask_key = "meta/" + cfg.mask_key
+
+        input_list, spectra_list, intermediate_target_list = [], [], []
+
+        with h5py.File(file_path, "r") as f:
+            for key in input_keys:
+                input_list.append(np.array(f[key]))
+            for key in spectra_function_keys:
+                spectra_list.append(np.array(f[key]))
+            for key in intermediate_target_keys:
+                flux_spectrum = np.array(f[key])
+                assert flux_spectrum.shape[2] in (1, 2), f"Unexpected shape: {flux_spectrum.shape}"
+                flux_spectrum = flux_spectrum[:, :, 0, :, :, :]
+                summed_flux_spectrum = np.sum(flux_spectrum, axis=2)
+                intermediate_target_list.append(summed_flux_spectrum)
+
+        input_data = np.stack(input_list, axis=1)
+        spectra_function_data = np.array(spectra_list[0])
+
+        input_data_expanded = np.repeat(input_data[:, np.newaxis, :], spectra_function_data.shape[1], axis=1)
+        spectra_function_data_expanded = spectra_function_data[:, :, np.newaxis]
+        combined_matrix = np.concatenate((input_data_expanded, spectra_function_data_expanded), axis=2)
+
+        flux_per_spicies_per_ky = torch.tensor(intermediate_target_list[0], dtype=torch.float32)
+
+        G_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 0]
+        Q_elec_per_ky = flux_per_spicies_per_ky[:, :, 0, 1]
+        Q_ions_per_ky = torch.sum(flux_per_spicies_per_ky[:, :, 1:, 1], dim=-1)
+        P_ions_per_ky = torch.sum(flux_per_spicies_per_ky[:, :, 1:, 2], dim=-1)
+
+        target_flux_per_ky = torch.stack(
+            (G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1
+        )
+
+        return combined_matrix, target_flux_per_ky

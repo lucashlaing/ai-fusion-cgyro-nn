@@ -93,42 +93,34 @@ def run_train(cfg):
     bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker) 
     
     print(f'Acquiring initial train dataset')
-    full_dataset_list = list(full_dataset)  
-    print(f'Pool size: {len(full_dataset_list)}')
-    # change to new method 
-    new_samples = bal.get_initial_dataset(len(full_dataset_list))
+    new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
 
     # Add the new candidates to our train folder
     train_dir = os.path.join(cfg.dataset.dataset_root, "train")
-    new_samples_full = []
-    ### WE SHOULD GRAB FROM CANDIDATES FILE
     candidate_file = os.path.join(train_dir, "candidates.h5")
-    with h5py.File(candidate_file, "r") as f:
-        candidate_inputs = np.array(f["inputs"])
-        candidate_sample_idx = np.array(f["sample_idx"])
-
     new_samples_full = []
+   
+    candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
     for j in range(new_samples.shape[0]):
-        sample = new_samples[j, :].detach().cpu().numpy()
+        sample = new_samples[j,:]
+        full_sample = find_in_dataset(candidate_list, sample)
+        if full_sample is not None:
+            # mark the new candidates as used from our pool
+            found_input = full_sample[0]
+            if pool_tracker.is_used(found_input):
+                print(f'Warning: acquired duplicate candidates')
+                continue
+            pool_tracker.mark_used(found_input)
+            new_samples_full.append(full_sample)
+            print(f'Saved new sample')
+        else:
+            print(f'Query could not be matched in pool')
 
-        # Find where this selected ky came from
-        match_idx = np.where(np.all(np.isclose(candidate_inputs, sample, atol=1e-8, rtol=1e-8), axis=1))[0]
-        if len(match_idx) == 0:
-            print("⚠️ Candidate not found in candidate file.")
-            continue
-        matched_idx = match_idx[0]
-        pool_sample_idx = candidate_sample_idx[matched_idx]
+    total_num_samples = len(new_samples_full)
+    print(f'Number of acquired samples for initial train: {total_num_samples}')
 
-        # Use those indices to fetch full sample directly
-        full_input, full_target = full_dataset_list[pool_sample_idx][0:2]
-        if pool_tracker.is_used(full_input):
-            print(f'Warning: acquired duplicate candidates')
-            continue
-        new_samples_full.append((full_input, full_target))
-        print(full_input.shape)
-        pool_tracker.mark_used(full_input)
 
-    print(f"✅ Retrieved {len(new_samples_full)} full samples from candidate file.")
+    print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
     os.remove(candidate_file)
     print("Candidate file deleted successfully")
     bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
@@ -240,36 +232,30 @@ def run_train(cfg):
 
         # Add the new candidates to our train folder
         train_dir = os.path.join(cfg.dataset.dataset_root, "train")
-        new_samples_full = []
-        full_dataset_list = list(full_dataset)  
-        print(f'Pool size: {len(full_dataset_list)}')
         candidate_file = os.path.join(train_dir, "candidates.h5")
-        with h5py.File(candidate_file, "r") as f:
-            candidate_inputs = np.array(f["inputs"])
-            candidate_sample_idx = np.array(f["sample_idx"])
-
         new_samples_full = []
+    
+        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
         for j in range(new_samples.shape[0]):
-            sample = new_samples[j, :].detach().cpu().numpy()
+            sample = new_samples[j,:]
+            full_sample = find_in_dataset(candidate_list, sample)
+            if full_sample is not None:
+                # mark the new candidates as used from our pool
+                found_input = full_sample[0]
+                if pool_tracker.is_used(found_input):
+                    print(f'Warning: acquired duplicate candidates')
+                    continue
+                pool_tracker.mark_used(found_input)
+                new_samples_full.append(full_sample)
+                print(f'Saved new sample')
+            else:
+                print(f'Query could not be matched in pool')
 
-            # Find where this selected ky came from
-            match_idx = np.where(np.all(np.isclose(candidate_inputs, sample, atol=1e-8, rtol=1e-8), axis=1))[0]
-            if len(match_idx) == 0:
-                print("⚠️ Candidate not found in candidate file.")
-                continue
-            matched_idx = match_idx[0]
-            pool_sample_idx = candidate_sample_idx[matched_idx]
+        total_num_samples = len(new_samples_full)
+        print(f'Number of acquired samples for initial train: {total_num_samples}')
 
-            # Use those indices to fetch full sample directly
-            full_input, full_target = full_dataset_list[pool_sample_idx][0:2]
-            if pool_tracker.is_used(full_input):
-                print(f'Warning: acquired duplicate candidates')
-                continue
-            print("saved 1 sample")
-            new_samples_full.append((full_input, full_target))
-            pool_tracker.mark_used(full_input)
 
-        print(f"✅ Retrieved {len(new_samples_full)} full samples from candidate file.")
+        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
         os.remove(candidate_file)
         print("Candidate file deleted successfully")
         # for j in range(new_samples.shape[0]):
@@ -330,7 +316,7 @@ def ragged_collate(batch):
 
 def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
     """
-    Find the index and full sample in the dataset that matches the given query tensor.
+    Find the full sample in the dataset that matches the given query tensor.
 
     Parameters
     ----------
@@ -343,25 +329,24 @@ def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
 
     Returns
     -------
-    (int, tuple) or (None, None)
-        The index and the full dataset sample, or (None, None) if not found.
+    (tuple) or (None)
+        The full dataset sample, or (None) if not found.
     """
-    for idx in range(len(full_dataset)):
-        # Deprecated format:
-        # input_data, target_flux_per_ky, target_flux, failed_mask = full_dataset[idx]
+    combined_matrix, target_flux_per_ky = full_dataset
 
-        # Format for ky-specific samples (not 24 ky per sample)
-        input_data, target_flux_per_ky = full_dataset[idx] 
-        for j in range(input_data.shape[0]):
-            input_tensor = input_data[j] # input_data shape = (nky, 32)
-            # if np.isclose(input_tensor[-1].detach().cpu().numpy(), 0):
-            #     # Rest of ky will be zero, do not take this candidate as it has been requested for a failed ky loc
-            #     break
+    for idx in range(combined_matrix.shape[0]):
+        input_data = torch.tensor(combined_matrix[idx], dtype=torch.float32)
+        target_data = target_flux_per_ky[idx]  # shape (nky, 4)
+
+        for j in range(input_data.shape[0]):  # loop over ky dimension
+            input_tensor = input_data[j]
             if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
-                if torch.isnan(input_tensor).any(axis=0) or torch.isnan(query_tensor).any(axis=0):
+                if torch.isnan(input_tensor).any() or torch.isnan(query_tensor).any():
                     print('Warning: found NaN in acquired input tensor')
-                return idx, (input_data[j], target_flux_per_ky[j])
-    return None, None
+                return (input_data, target_data)
+
+    return None
+
 
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")

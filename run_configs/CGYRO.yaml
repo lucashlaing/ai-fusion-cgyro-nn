@@ -8,7 +8,7 @@ defaults:
   - override hydra/job_logging: none
 
 project: CGYRO
-board: False
+board: True
 plot: False
 dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth

@@ -470,9 +470,9 @@ class BAL():
         print("Random candidates found")
         return candidates[random_idxs[:self.cfg.new_sample_size]]
     
-    def get_initial_dataset(self, poolSize):
+    def get_initial_dataset(self, init_training_size):
         train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
-        candidates, outputs = self.sample_candidates(poolSize, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features)
+        candidates, outputs = self.sample_candidates(init_training_size, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features)
 
         random_idxs = torch.randperm(candidates.shape[0])
         print("Random candidates found")
