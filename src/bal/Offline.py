@@ -20,18 +20,17 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 class Offline(BAL):
     def __init__(self, run_cfg, dataset, pool_dataset, pool_tracker):
         super().__init__(run_cfg, dataset)
-        self.pool_dataset = pool_dataset
+        self.pool_dataset_list = list(pool_dataset)
         self.pool_tracker = pool_tracker
     
     def is_pool_empty(self):
         return len(self.get_unused_entries()) == 0
     
     def get_unused_entries(self, filter_kys=False, return_full=False):
-        dataset_list = list(self.pool_dataset)
         unused_entries = []
         full_samples = []
 
-        for sample_idx, d in enumerate(dataset_list):
+        for sample_idx, d in enumerate(self.pool_dataset_list):
             inputs = d[0]
             targets = d[1]
             for ky_idx in range(inputs.shape[0]):
