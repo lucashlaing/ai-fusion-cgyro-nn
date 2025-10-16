@@ -193,7 +193,7 @@ def run_train(cfg):
                 trainer.save(ckpt_dir)
 
             # Training iteration
-            # trainer.iter(train_data)
+            trainer.iter(train_data)
 
             # Time estimation
             if trainer.train_step == cfg.time_warm:
@@ -314,38 +314,14 @@ def ragged_collate(batch):
 
     return inputs_cat, targets_cat
 
-def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
-    """
-    Find the full sample in the dataset that matches the given query tensor.
-
-    Parameters
-    ----------
-    full_dataset : Dataset
-        The dataset to search in.
-    query_tensor : torch.Tensor
-        The input tensor to look for.
-    tol : float
-        Tolerance for float comparison.
-
-    Returns
-    -------
-    (tuple) or (None)
-        The full dataset sample, or (None) if not found.
-    """
-    combined_matrix, target_flux_per_ky = full_dataset
-
-    for idx in range(combined_matrix.shape[0]):
-        input_data = torch.tensor(combined_matrix[idx], dtype=torch.float32)
-        target_data = target_flux_per_ky[idx]  # shape (nky, 4)
-
-        for j in range(input_data.shape[0]):  # loop over ky dimension
-            input_tensor = input_data[j]
-            if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
-                if torch.isnan(input_tensor).any() or torch.isnan(query_tensor).any():
-                    print('Warning: found NaN in acquired input tensor')
-                return (input_data, target_data)
-
-    return None
+def find_in_dataset(candidate_list, query_tensor):
+    combined_matrix, target_flux_per_ky, lookup = candidate_list
+    key = tuple(query_tensor.cpu().numpy().round(8))
+    if key not in lookup:
+        return None
+    idx, j = lookup[key]
+    return (torch.tensor(combined_matrix[idx], dtype=torch.float32),
+            target_flux_per_ky[idx])
 
 
 

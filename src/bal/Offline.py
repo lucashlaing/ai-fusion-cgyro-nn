@@ -215,7 +215,7 @@ class Offline(BAL):
                         f.create_dataset(name, data=flux_arr[:, i])
         return save_path
     
-    def read_h5_dataset(self, file_path, cfg, has_fail_mask=True):
+    def read_h5_dataset(self, file_path, cfg, has_fail_mask=True, build_index=True):
         """
         Reuses the same logic as our dataset classes to read dataset content properly.
         Used in cases where we dont want to use Dataloader and spend time
@@ -258,5 +258,13 @@ class Offline(BAL):
         target_flux_per_ky = torch.stack(
             (G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1
         )
+        if build_index:
+            # Build hash index for quick lookup
+            lookup = {}
+            for idx in range(combined_matrix.shape[0]):
+                for j in range(combined_matrix.shape[1]):
+                    key = tuple(combined_matrix[idx, j].round(8))  # round for stability
+                    lookup[key] = (idx, j)
+            return combined_matrix, target_flux_per_ky, lookup
 
         return combined_matrix, target_flux_per_ky
