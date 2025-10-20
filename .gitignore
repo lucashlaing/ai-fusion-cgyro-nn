@@ -7,3 +7,4 @@ test_data/
 *.log
 *.h5
 *.csv
+node_modules/

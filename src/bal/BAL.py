@@ -436,17 +436,21 @@ class BAL():
     
     def propose_samples(self, trainer, lowerTrainer):
         train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        start = time.time()
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features) or tuple for Offline
         print("Candidates found")
+        end = time.time()
+        print("Time to find candidates: ", str(end - start))
 
         proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
         print("Proposed samples")
         return proposed_samples
     
-    def eig_sample(self, candidates, trainer, lowerTrainer):
+    def eig_sample(self, candidates_tuple, trainer, lowerTrainer):
         # Each returns (scores, indices) where indices are into `candidates`
         # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
         # print("model difference Done")
+        candidates, outputs = candidates_tuple
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
@@ -464,7 +468,8 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self, candidates, trainer, lowerTrainer):
+    def random_sample(self, candidates_tuple, trainer, lowerTrainer):
+        candidates, output = candidates_tuple
         # candidates shape: (n_candidates, n_features)
         random_idxs = torch.randperm(candidates.shape[0])
         print("Random candidates found")
@@ -529,7 +534,7 @@ class BAL():
         train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
         train_outputs = torch.cat([x[1] for x in self.dataset], dim=0)
         print(f"train inputs are {train_inputs.shape}")
-        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes)
+        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes, True)
 
         train_data = (train_inputs, train_labels)
         print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")

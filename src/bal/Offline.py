@@ -8,183 +8,312 @@ import time
 import os
 import h5py
 import numpy as np
+import gc
+from collections import defaultdict
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
 sys.path.append('./src/bal/')
 from BAL import BAL
 
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 class Offline(BAL):
+    """
+    Memory-friendly Offline BAL implementation.
+
+    Key changes:
+    - Do NOT materialize the whole pool into a list. Keep it lazy (indexable).
+    - Use reservoir sampling to pick n_samples without storing the whole unused list.
+    - Only load the few full samples corresponding to chosen indices.
+    - Utilities to free memory after heavy ops.
+    """
+
     def __init__(self, run_cfg, dataset, pool_dataset, pool_tracker):
         super().__init__(run_cfg, dataset)
-        self.pool_dataset_list = list(pool_dataset)
+        # CHANGE: keep a reference to the pool dataset (lazy access). DO NOT call list(pool_dataset).
+        self.pool_dataset = pool_dataset
         self.pool_tracker = pool_tracker
-    
+        self.run_cfg = run_cfg
+
     def is_pool_empty(self):
-        return len(self.get_unused_entries()) == 0
-    
+        """
+        Pool considered empty when there are no unused entries.
+        This does a streaming check instead of building the full unused list.
+        """
+        # quick heuristic: if pool length is zero -> empty
+        try:
+            pool_len = len(self.pool_dataset)
+        except Exception:
+            # fallback: iterate until we find an unused or exhaust
+            pool_len = None
+
+        if pool_len == 0:
+            return True
+
+        # streaming check: stop early if we find any unused
+        if pool_len is None:
+            for sample_idx, d in enumerate(self.pool_dataset):
+                inputs = d[0]
+                for ky_idx in range(inputs.shape[0]):
+                    params = inputs[ky_idx]
+                    if not self.pool_tracker.is_used(params):
+                        return False
+            return True
+        else:
+            for sample_idx in range(pool_len):
+                inputs, _ = self.pool_dataset[sample_idx]
+                for ky_idx in range(inputs.shape[0]):
+                    params = inputs[ky_idx]
+                    if not self.pool_tracker.is_used(params):
+                        return False
+            return True
+
     def get_unused_entries(self, filter_kys=False, return_full=False):
-        unused_entries = []
-        full_samples = []
+        """
+        LIGHTWEIGHT helper — returns indices only (sample_idx, ky_idx).
+        NOTE: This function returns indices (integers), not full tensors, to keep memory small.
+        If return_full=True, the method will also return a list of *unique* full sample indices
+        (not loaded tensors) so callers can decide when to load the tensors.
+        """
+        unused_indices = []
+        unique_sample_idxs = set()
 
-        for sample_idx, d in enumerate(self.pool_dataset_list):
-            inputs = d[0]
-            targets = d[1]
-            for ky_idx in range(inputs.shape[0]):
-                params = inputs[ky_idx]
-                t_flux = targets[ky_idx]
+        try:
+            pool_len = len(self.pool_dataset)
+        except Exception:
+            # dataset not sized -> iterate using enumerate
+            pool_len = None
 
-                if filter_kys and np.isclose(params[-1].detach().cpu().numpy(), 0):
+        if pool_len is None:
+            iterator = enumerate(self.pool_dataset)
+        else:
+            iterator = ((i, None) for i in range(pool_len))
+
+        if pool_len is None:
+            for sample_idx, d in iterator:
+                inputs = d[0]
+                for ky_idx in range(inputs.shape[0]):
+                    params = inputs[ky_idx]
+                    if filter_kys and np.isclose(params[-1].detach().cpu().numpy(), 0):
+                        continue
+                    if not self.pool_tracker.is_used(params):
+                        unused_indices.append((sample_idx, ky_idx))
+                        unique_sample_idxs.add(sample_idx)
+        else:
+            for sample_idx in range(pool_len):
+                inputs, _ = self.pool_dataset[sample_idx]
+                for ky_idx in range(inputs.shape[0]):
+                    params = inputs[ky_idx]
+                    if filter_kys and np.isclose(params[-1].detach().cpu().numpy(), 0):
+                        continue
+                    if not self.pool_tracker.is_used(params):
+                        unused_indices.append((sample_idx, ky_idx))
+                        unique_sample_idxs.add(sample_idx)
+
+        if return_full:
+            return unused_indices, list(unique_sample_idxs)
+        return unused_indices
+
+    @torch.no_grad()
+    def sample_candidates(self, n_samples, dist_json_path=None, save_dir=None):
+        """
+        Efficient single-pass candidate sampler + HDF5 saver.
+        Keeps same input/output as before but uses far less memory and GPU.
+        """
+        os.makedirs(save_dir or ".", exist_ok=True)
+        save_path = os.path.join(save_dir, "candidates.h5") if save_dir else None
+
+        # Step 1: Reservoir sample indices (sample_idx, ky_idx)
+        reservoir = []
+        total_unused = 0
+        pool_iter = iter(self.pool_dataset)
+
+        # We'll buffer HDF5 creation until we actually have samples
+        h5_initialized = False
+
+        candidates, outputs = [], []
+        write_buffer = {
+            "inputs": [],
+            "flux_per_ky": [],
+            "masks": []
+        }
+
+        for sample_idx, (inp, tflux) in enumerate(pool_iter):
+            inp = inp.detach().cpu()
+            tflux = tflux.detach().cpu()
+            nky = inp.shape[0]
+
+            for ky_idx in range(nky):
+                params = inp[ky_idx]
+                if self.pool_tracker.is_used(params):
                     continue
 
-                if not self.pool_tracker.is_used(params):
-                    # store (input, target, sample_idx)
-                    unused_entries.append((params[np.newaxis, :], t_flux[np.newaxis, :], sample_idx))
-                    if return_full:
-                        full_samples.append(d)
+                total_unused += 1
+                if len(reservoir) < n_samples:
+                    reservoir.append((sample_idx, ky_idx))
+                else:
+                    j = random.randrange(total_unused)
+                    if j < n_samples:
+                        reservoir[j] = (sample_idx, ky_idx)
 
-        return (unused_entries, full_samples) if return_full else unused_entries
-
-    def sample_candidates(self, n_samples, dist_json_path, save_dir=None):
-        """
-        Sample candidate inputs directly from self.dataset instead of using a distribution JSON.
-        Ensures no duplicate candidates are added.
-        
-        Args:
-            n_samples (int): Number of candidates to sample.
-        
-        Returns:
-            torch.Tensor: Sampled candidates
-                - Shape (n_samples, 31) if self.has_spectra=False
-                - Shape (n_samples * 24, 32) if self.has_spectra=True
-        """
-        # Filter out already-used datapoints
-        unused_entries, full_samples = self.get_unused_entries(return_full=True)
-
-        print(f'Remaining pool size: {len(unused_entries)}')
-        
-        if len(unused_entries) == 0: # pool is empty
+        if total_unused == 0:
             return None
-        
-        if len(unused_entries) < n_samples:
-            # Changed error to warning
-            print(
-                f"WARNING: Not enough unused datapoints left. Requested {n_samples}, "
-                f"but only {len(unused_entries)} available."
-            )
-            # Only sample remaining unused entries
-            n_samples = len(unused_entries)
 
-        # Randomly pick indices from the unused set
-        chosen_idx = random.sample(range(len(unused_entries)), n_samples)
-        chosen_entries = [unused_entries[i] for i in chosen_idx]
-        chosen_full_samples = [full_samples[i] for i in chosen_idx] # has the full samples(nky, 32) for each entry(1, 32)
+        if len(reservoir) < n_samples:
+            print(f"WARNING: only {len(reservoir)} unused candidates available (requested {n_samples})")
+            n_samples = len(reservoir)
 
-        candidates = []
-        outputs = [] # ADDED FOR OFFLINE TGFLF SINN
-        for input_tensor, output_tensor,_ in chosen_entries:
-            candidates.append(input_tensor)
-            outputs.append(output_tensor) # ADDED FOR OFFLINE TGLF SINN
-        
-        if save_dir is not None:
-            os.makedirs(save_dir, exist_ok=True)
-            candidate_path = os.path.join(save_dir, "candidates.h5")
+        # Step 2: Group indices by sample for faster lookup
+        sample_to_kys = defaultdict(list)
+        for s_idx, ky in reservoir:
+            sample_to_kys[s_idx].append(ky)
 
-            print(f"Saving {len(chosen_full_samples)} full candidates to {candidate_path}")
+        # Step 3: Second pass only over selected samples, but stream-write to HDF5
+        if save_path is not None:
+            h5f = h5py.File(save_path, "w")
+            meta_grp = h5f.create_group("meta")
+            inputs_list, ky_list, flux_list, mask_list = [], [], [], []
 
-            # Use your same save function — no logic change
-            self.save_new_samples_as_h5(
-                self.run_cfg.dataset,
-                chosen_full_samples,
-                save_dir,
-                filename="candidates.h5"
-            )
-        # appends them rather than stack it
-        final_candidates = torch.cat(candidates, dim=0), torch.cat(outputs, dim=0)
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
+            if sample_idx not in sample_to_kys:
+                continue
 
-        return final_candidates # Shape: (n * ky, 32)
-    
+            inp = inp.detach().cpu()
+            tflux = tflux.detach().cpu()
+            ky_indices = sample_to_kys[sample_idx]
+
+            # Collect only chosen ky slices
+            candidate_input = inp[ky_indices]
+            candidate_output = tflux[ky_indices]
+
+            candidates.append(candidate_input)
+            outputs.append(candidate_output)
+
+            # self.pool_tracker.mark_used(candidate_input)
+
+            # Optional: save as we go
+            if save_path is not None:
+                inp_np = inp.numpy()
+                tflux_np = tflux.numpy()
+                mask_np = inp_np[:, -1] == 0
+
+                inputs_list.append(inp_np)
+                flux_list.append(tflux_np)
+                mask_list.append(mask_np)
+                ky_list.append(inp_np[:, -1])
+
+        final_candidates = torch.cat(candidates, dim=0)
+        final_outputs = torch.cat(outputs, dim=0)
+
+        # Step 4: If saving, build file structure
+        if save_path is not None:
+            dataset_cfg = self.run_cfg.dataset
+
+            inputs_arr = np.array(inputs_list)
+            flux_arr = np.array(flux_list)
+            masks_arr = np.array(mask_list)
+            ky_arr = np.array(ky_list)
+
+            n_samples, nky, n_features = inputs_arr.shape
+
+            for i, key in enumerate(dataset_cfg.input_keys):
+                h5f.create_dataset(key, data=inputs_arr[:, 0, i])
+
+            for i, key in enumerate(dataset_cfg.spectra_function_keys):
+                if key == "ky":
+                    h5f.create_dataset(key, data=ky_arr)
+
+            if len(dataset_cfg.intermediate_target_keys) > 0:
+                ns = 3  # electrons + 2 ions
+                nf = 2
+                sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5))
+                for slice_idx in range(2):
+                    sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = flux_arr[:, :, 0] / nf
+                    sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = flux_arr[:, :, 0] / nf
+                    sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = flux_arr[:, :, 1] / nf
+                    sumf_reconstructed[:, :, slice_idx, 1, 0, 1] = flux_arr[:, :, 1] / nf
+
+                    n_ion_species = ns - 1
+                    q_ions = flux_arr[:, :, 2] / (n_ion_species * nf)
+                    p_ions = flux_arr[:, :, 3] / (n_ion_species * nf)
+                    for field_idx in range(nf):
+                        for ion_idx in range(1, ns):
+                            sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
+                            sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
+
+                h5f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
+
+            masks_bool = masks_arr.astype(np.bool_)
+            meta_grp.create_dataset(dataset_cfg.mask_key, data=masks_bool)
+            total_count_arr = np.full((n_samples,), nky, dtype=np.int32)
+            meta_grp.create_dataset("total_count", data=total_count_arr)
+
+            h5f.close()
+
+        del candidates, outputs, reservoir, sample_to_kys
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        return final_candidates, final_outputs
+
+
+
     def save_new_samples_as_h5(self, dataset_cfg, new_samples_full, save_dir, filename="new_data.h5"):
         """
-        Save new dataset samples into an HDF5 file in the same format as the original dataset.
-
-        Parameters
-        ----------
-        dataset_cfg : omegaconf.DictConfig
-            Dataset config with input_keys, target_keys, spectra_function_keys, intermediate_target_keys, mask_key, etc.
-        new_samples_full : list of tuples
-            List of full dataset entries, where each entry is
-            (input_tensor, target_flux_per_ky).
-        save_dir : str
-            Directory where the .h5 file will be written.
-        filename : str
-            Name of the new HDF5 file.
+        Reused your save_new_samples_as_h5 implementation but kept memory-conscious steps and comments.
+        new_samples_full: list of (inp, t_flux_per_ky) where inp and t_flux_per_ky are tensors (CPU or GPU).
         """
         os.makedirs(save_dir, exist_ok=True)
         save_path = os.path.join(save_dir, filename)
 
         inputs = []
-        targets = []
         flux_per_ky = []
         masks = []
 
         for inp, t_flux_per_ky in new_samples_full:
-            # Each inp shape: (nky, features) — includes input features + ky values
-            input = inp.cpu().numpy()
-            inputs.append(input)
+            # make sure to move to CPU and numpy only once per sample
+            inp_np = inp.detach().cpu().numpy()
+            tflux_np = t_flux_per_ky.detach().cpu().numpy()
 
-            mask = input[-1] == 0
+            inputs.append(inp_np)
+            flux_per_ky.append(tflux_np)
+            mask = inp_np[:, -1] == 0  # per-ky mask
             masks.append(mask)
 
-            t_flux_per_ky = t_flux_per_ky.cpu().numpy()
-            flux_per_ky.append(t_flux_per_ky)
-
-        inputs = np.array(inputs)       # (n_samples, n_features)
-        flux_per_ky = np.array(flux_per_ky)  # (n_samples, 4)
-        masks = np.array(masks)          # (n_samples)
-
-        # Unsqueeze dim=1 for nky=1
-        # inputs = inputs[:, np.newaxis, :] # (n_samples, nky, n_features)
-        # flux_per_ky = flux_per_ky[:, np.newaxis, :] # (n_samples, nky, 4)
-        # masks = masks[:, np.newaxis] # (n_samples, nky)
+        inputs = np.array(inputs)        # (n_samples, nky, n_features)
+        flux_per_ky = np.array(flux_per_ky)
+        masks = np.array(masks)
 
         n_samples, nky, n_features = inputs.shape
 
-        # Flux target keys
+        # Flux target keys for later splitting (kept from your previous save logic)
         target_keys = [
-            "OUT_G_elec",   # fluxes[:, 0]
-            "OUT_Q_elec",   # fluxes[:, 1]
-            "OUT_Q_ions",   # fluxes[:, 2]
-            "OUT_P_ions",   # fluxes[:, 3]
+            "OUT_G_elec",
+            "OUT_Q_elec",
+            "OUT_Q_ions",
+            "OUT_P_ions",
         ]
 
         with h5py.File(save_path, "w") as f:
-            # Split input features (everything except last column = ky)
+            # split input features (everything except last column = ky)
             input_features = inputs[:, 0, :-1]  # (n_samples, n_input_features)
             ky_values = inputs[:, :, -1]        # (n_samples, nky)
 
-            # Save input features
             for i, key in enumerate(dataset_cfg.input_keys):
                 f.create_dataset(key, data=input_features[:, i])
 
-            # Save spectra function keys (ky)
             for i, key in enumerate(dataset_cfg.spectra_function_keys):
                 if key == "ky":
                     f.create_dataset(key, data=ky_values)
 
-            # Save intermediate target (reconstruct sumf-like tensor)
+            # reconstruct intermediate target (sumf-like) if needed
             if len(dataset_cfg.intermediate_target_keys) > 0:
-                n_samples, nky, _ = flux_per_ky.shape
-                ns = 3  # electrons + 2 ions
-                nf = 2  # fields
-
-                sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5)) #nky = 1
-
+                ns = 3  # electrons + 2 ions (same as before)
+                nf = 2
+                sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5))
                 for slice_idx in range(2):
-                    # electrons
                     sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = flux_per_ky[:, :, 0] / nf
                     sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = flux_per_ky[:, :, 0] / nf
                     sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = flux_per_ky[:, :, 1] / nf
@@ -203,23 +332,18 @@ class Offline(BAL):
 
             # Meta group
             meta_grp = f.create_group("meta")
-            meta_grp.create_dataset(dataset_cfg.mask_key, data=masks)
-            total_count_arr = np.full((n_samples,), nky, dtype=np.int32) #nky = 1
+            masks_bool = masks.astype(np.bool_)
+            meta_grp.create_dataset(dataset_cfg.mask_key, data=masks_bool)
+            total_count_arr = np.full((n_samples,), nky, dtype=np.int32)
             meta_grp.create_dataset("total_count", data=total_count_arr)
 
-            for key in f.keys():
-                if key == "fluxes":
-                    flux_arr = f["fluxes"][:]
-                    # Split into separate 1D arrays
-                    for i, name in enumerate(target_keys):
-                        f.create_dataset(name, data=flux_arr[:, i])
         return save_path
-    
+
     def read_h5_dataset(self, file_path, cfg, has_fail_mask=True, build_index=True):
         """
-        Reuses the same logic as our dataset classes to read dataset content properly.
-        Used in cases where we dont want to use Dataloader and spend time
-        Returns (combined_matrix, target_flux_per_ky).
+        Keep your original read_h5_dataset but unchanged in semantics. If build_index=True,
+        returns (combined_matrix, target_flux_per_ky, lookup) where lookup is a small
+        dictionary mapping rounded input tuples -> (sample_idx, ky_idx) for O(1) lookups.
         """
         input_keys = cfg.input_keys
         target_keys = cfg.target_keys
@@ -258,12 +382,12 @@ class Offline(BAL):
         target_flux_per_ky = torch.stack(
             (G_elec_per_ky, Q_elec_per_ky, Q_ions_per_ky, P_ions_per_ky), dim=-1
         )
+
         if build_index:
-            # Build hash index for quick lookup
             lookup = {}
             for idx in range(combined_matrix.shape[0]):
                 for j in range(combined_matrix.shape[1]):
-                    key = tuple(combined_matrix[idx, j].round(8))  # round for stability
+                    key = tuple(np.round(combined_matrix[idx, j], 8))
                     lookup[key] = (idx, j)
             return combined_matrix, target_flux_per_ky, lookup
 

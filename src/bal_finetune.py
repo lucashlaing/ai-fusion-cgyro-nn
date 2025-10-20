@@ -112,7 +112,7 @@ def run_train(cfg):
                 continue
             pool_tracker.mark_used(found_input)
             new_samples_full.append(full_sample)
-            print(f'Saved new sample')
+            # print(f'Saved new sample')
         else:
             print(f'Query could not be matched in pool')
 
@@ -121,13 +121,17 @@ def run_train(cfg):
 
 
     print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+    # cleaning up memory 
+    del candidate_list
     os.remove(candidate_file)
     print("Candidate file deleted successfully")
     bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
+    print_gpu_mem("after gathering initial dataset")
+    # moved model outside to continue training over BAL runs
+    model =  MODEL_HANDLER["SR"](cfg.model)
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
-        # Load model for finetuning
-        model =  MODEL_HANDLER["SR"](cfg.model)
+        # 
         # load_prev_model(model, checkpoint_path)
         
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
@@ -202,19 +206,19 @@ def run_train(cfg):
                 ratio = (trainer.train_step - cfg.time_warm) / total_steps
                 timer.estimate_time("time estimate", ratio)
         print("Training Done")
-
+        print_gpu_mem("after training step")
         # Plot / log losses
         current_test_loss = trainer.get_test_loss(test_loader)
         if torch.is_tensor(current_test_loss):
             current_test_loss = current_test_loss.detach().cpu().item()
         test_losses.append(current_test_loss)
-        base_loss = base_trainer.get_test_loss(test_loader)
-        test_rmsle.append(trainer.get_test_rmsle(test_loader))
-        base_rmsle = base_trainer.get_test_rmsle(test_loader)
-        print(f'Test MSE: {test_losses[i]}')
-        print(f'Base Model MSE: {base_loss}')
-        print(f'Test RMSLE: {test_rmsle[i]}')
-        print(f'Base Model RMSLE: {base_rmsle}')
+        # base_loss = base_trainer.get_test_loss(test_loader)
+        # test_rmsle.append(trainer.get_test_rmsle(test_loader))
+        # base_rmsle = base_trainer.get_test_rmsle(test_loader)
+        # print(f'Test MSE: {test_losses[i]}')
+        # print(f'Base Model MSE: {base_loss}')
+        # print(f'Test RMSLE: {test_rmsle[i]}')
+        # print(f'Base Model RMSLE: {base_rmsle}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
     
         if cfg.board:
@@ -247,33 +251,15 @@ def run_train(cfg):
                     continue
                 pool_tracker.mark_used(found_input)
                 new_samples_full.append(full_sample)
-                print(f'Saved new sample')
+                # print(f'Saved new sample')
             else:
                 print(f'Query could not be matched in pool')
 
-        total_num_samples = len(new_samples_full)
-        print(f'Number of acquired samples for initial train: {total_num_samples}')
-
-
         print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+        # cleaning up memory 
+        del candidate_list
         os.remove(candidate_file)
         print("Candidate file deleted successfully")
-        # for j in range(new_samples.shape[0]):
-        #     sample = new_samples[j,:]
-        #     idx, full_sample = find_in_dataset(full_dataset_list, sample)
-        #     if idx is not None:
-        #         # mark the new candidates as used from our pool
-        #         found_input = full_sample[0]
-        #         if torch.isnan(found_input).any():
-        #             print(f'Warning: acquired candidate with NaN element(s)')
-        #         if pool_tracker.is_used(found_input):
-        #             print(f'Warning: acquired duplicate candidates')
-        #             continue
-        #         pool_tracker.mark_used(found_input)
-        #         new_samples_full.append(full_sample)
-        #         print(f'Saved new sample')
-        #     else:
-        #         print(f'Query could not be matched in pool')
 
         num_acq = len(new_samples_full)
         num_acquired_samples.append(num_acq)
@@ -323,7 +309,11 @@ def find_in_dataset(candidate_list, query_tensor):
     return (torch.tensor(combined_matrix[idx], dtype=torch.float32),
             target_flux_per_ky[idx])
 
-
+def print_gpu_mem(note=""):
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"[GPU Mem] {note} allocated={alloc:.2f} GB reserved={reserved:.2f} GB")
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):

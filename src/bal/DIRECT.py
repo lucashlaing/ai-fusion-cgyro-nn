@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import time
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -36,54 +37,84 @@ class DIRECT():
         all_preds_normalized = torch.asinh(all_preds)
         return all_preds
 
-    def log_mse(self, candidates, num_classes, mean, std):
+    def log_mse(self, candidates, num_classes, mean=None, std=None, recompute_stats=False):
         """
         Classifies inputs based on log ratio of TGLF to CGYRO outputs corresponding to that input.
 
         Args:
             candidates (tuple): Tuple of (input_candidates, output_candidates) for TGLF-SiNN data
-            num_classes (Tensor): Total number of classes to separate into
-            mean (float): Mean for standardization
-            std (float): Standard deviation for standardization
+            num_classes (int): Total number of classes to separate into
+            mean (float, optional): Mean for standardization
+            std (float, optional): Standard deviation for standardization
+            recompute_stats (bool): Whether to recompute mean/std from the current candidates
 
         Returns:
             labels (Tensor): Labels corresponding to inputs
+            mean (float): Mean used for standardization
+            std (float): Std used for standardization
         """
-        # For TGLF-SiNN data, use ground truth outputs instead of TGLF model predictions
         candidates_input, candidates_output = candidates
         tglf_out = candidates_output  # Use ground truth as TGLF output
         cgyro_out = self.get_predictions(candidates_input, self.cgyro_trainer.model)
-        deltas = torch.sum(torch.abs(((tglf_out ** 2) - (cgyro_out ** 2))), dim=1)
+        deltas = torch.sum(torch.abs((tglf_out ** 2) - (cgyro_out ** 2)), dim=1)
 
-        # Standardize deltas -> z-scores
+        # If recompute_stats=True, compute new mean/std from deltas
+        if recompute_stats or mean is None or std is None:
+            clip_percent = 0.01 # how much to clip off the ends 
+            lower = torch.quantile(deltas, clip_percent)
+            upper = torch.quantile(deltas, 1 - clip_percent)
+            deltas_clipped = torch.clamp(deltas, lower, upper)
+            mean = deltas_clipped.mean()
+            std = deltas_clipped.std(unbiased=False) + 1e-12  # prevent divide-by-zero
+            # Store in self for future reuse
+            self.mean = mean
+            self.std = std
+
+        # Standardize deltas using provided or computed mean/std
         z_scores = (deltas - mean) / (std + 1e-12)
+
         # Bucket by integer multiples of std
-        labels = torch.floor(torch.abs(z_scores))  # 0 = within 1 std, 1 = 1-2 std, etc.
+        labels = torch.floor(torch.abs(z_scores))  # 0 = within 1 std, 1 = 1–2 std, etc.
         labels = torch.clamp(labels, min=0, max=num_classes - 1)
         labels = labels.view(-1, 1).long()
 
         # Count per class
         label_counts = torch.bincount(labels.view(-1), minlength=num_classes)
         print("Samples per class:", label_counts.tolist())
+        if recompute_stats:
+            print(f"New Mean: {mean.item():.4e}, New Std: {std.item():.4e}")
 
-        return labels
+        return labels, mean, std
+
     
-    def annotate(self, candidates, classify_func, num_classes):
+    def annotate(self, candidates, classify_func, num_classes, recompute_stats=False):
         """
-        Annotates candidates inputs with labels based on some specificed classification function.
-        This allows for easier experimentation with different classification functions, and hides
-        the grossness of the low-level input-label pairing in the rest of the pipeline.
+        Annotates candidate inputs with labels based on a specified classification function.
 
         Args:
-            candidates (Tensor or tuple): Input candidate tensor or tuple of (inputs, outputs) for TGLF-SiNN data
-            classify_func (Function): Function that takes as arguments (candidates, **kwargs) and returns labels (e.g. log_ratio above)
+            candidates (Tensor or tuple): Input candidate tensor or tuple of (inputs, outputs)
+            classify_func (Function): Function returning (labels, mean, std)
             num_classes (int): Number of classes for classification
-            (Optional) kwargs: Keyword arguments to pass to classify_func
+            recompute_stats (bool): Whether to recompute mean/std this time
 
         Returns:
-            labels (Tensor): labels associated with candidates, annotated using the classify_func
+            labels (Tensor): Labels for candidates
         """
-        labels = classify_func(candidates, num_classes, 0.3, 0.1)
+        mean = getattr(self, "mean", 0.0)
+        std = getattr(self, "std", 0.1)
+
+        labels, mean, std = classify_func(
+            candidates,
+            num_classes,
+            mean=mean,
+            std=std,
+            recompute_stats=recompute_stats
+        )
+
+        # Update stored stats
+        self.mean = mean
+        self.std = std
+
         return labels
     
     def vreduce_loss(self, train_data, pivot_idx, class_idx):
@@ -179,20 +210,37 @@ class DIRECT():
         return sorted_inputs, sorted_labels, candidate_mask
 
     def estimate_optimal_separation_threshold(self, class_idx, labels, inputs):
+        """
+        Finds the index where the threshold best separates class_idx from others,
+        accounting for skewed class distributions by using weighted imbalance.
+        """
         N = labels.shape[0]
         assert N == inputs.shape[0]
+
         max_j = 0
-        max_imbalance = 0
+        max_imbalance = -1  # start from -1 to handle rare classes
+
+        # Precompute a mask for the target class
+        class_mask = (labels.squeeze() == class_idx).int()
+
+        # Compute cumulative sum for left side
+        cumsum_left = torch.cumsum(class_mask, dim=0)
+        total_class = class_mask.sum().item()
+
+        # Iterate over possible thresholds
         for j in range(N):
-            left = labels[:j]
-            right = labels[j:]
-            left_sum = torch.sum(left == class_idx)
-            right_sum = torch.sum(right != class_idx)
-            imbalance = left_sum + right_sum
+            left_count = cumsum_left[j]              # # of class_idx in left side
+            right_count = total_class - left_count   # # of class_idx in right side
+
+            # Weighted imbalance: favor thresholds that split class occurrences
+            imbalance = min(left_count, right_count)
+
             if imbalance > max_imbalance:
                 max_imbalance = imbalance
                 max_j = j
+
         return max_j
+
     
     def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes, sorted_outputs=None):
 
@@ -326,6 +374,7 @@ class DIRECT():
         candidate_mask = is_candidate[sorted_idxs] # (N_train + N_candidates,) boolean values
         original_candidate_mask = candidate_mask.clone()
         
+        start = time.time()
         # Spend half of budget on using VReduce to sample inputs near the optimal separation threshold
         budget = B_train / (2 * num_classes)
         if budget > 0:
@@ -341,6 +390,8 @@ class DIRECT():
                     classify_func,
                     sorted_outputs
                 )
+        end = time.time()
+        print("Time for Vreduce: ", str(end - start)) 
         # Spend the rest of the budget on estimating optimal separation threshold and annotating near it
         new_inputs = sorted_inputs[~candidate_mask]
         new_labels = sorted_labels[~candidate_mask]
@@ -354,6 +405,7 @@ class DIRECT():
         remaining = max(0, int(B_train) - int(num_acquired_by_vreduce))
         budget_per_class = remaining // num_classes
         # Call threshold_select for each class (it updates sorted_inputs/labels/mask in place)
+        start = time.time()
         if budget_per_class > 0:
             for k in range(num_classes):
                 sorted_inputs, sorted_labels, candidate_mask = self.threshold_select(
@@ -367,7 +419,8 @@ class DIRECT():
                     num_classes,
                     sorted_outputs
                 )
-
+        end = time.time()
+        print("Time for Threshold: ", str(end - start)) 
         # Build final picked mask: those indices that were originally candidates and now are not candidates
         picked_mask = (~candidate_mask) & original_candidate_mask
         print(f"Total selected {picked_mask.sum().item()}")

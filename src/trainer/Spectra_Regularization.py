@@ -145,19 +145,20 @@ class Spectra_Regularization_Trainer(Base_Trainer):
 
     def get_test_loss(self, dataloader):
         """
-        Calculate loss
-
-        Args:
-            dataloader: The data loader to get data.
+        Calculate average test loss safely (no gradient tracking).
         """
+        self.model.eval()
         losses = []
-        for data in dataloader:
-            data = self.move_to_device(data)
-            # For calculate losses
-            loss = self.get_loss(data)
-            losses.append(loss)
+
+        with torch.no_grad():  # disable autograd graph building
+            for data in dataloader:
+                data = self.move_to_device(data)
+                loss = self.get_loss(data)
+                # detach from graph and move to CPU as a float
+                losses.append(loss.item())
 
         return sum(losses) / len(losses)
+
     
     def get_test_rmsle(self, dataloader):
         """

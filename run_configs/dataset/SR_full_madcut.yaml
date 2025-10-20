@@ -1,4 +1,4 @@
-dataset_root: './normal_dataset'
+dataset_root: '../../../data/lucas_work/tglf-sinn-data-subset' #443k pool #109k test
 input_keys: [
     "RLTS_3",
     "KAPPA_LOC",
