@@ -399,7 +399,7 @@ class BAL():
 
         return sorted_eig_values, sorted_indices
 
-    def model_difference(self, candidates, trainer, lowerTrainer, sort=False):
+    def model_difference(self, candidates, trainer, lowerTrainer, sort=False, ground_truths=None):
         """
         Sort candidates by the average predicted flux magnitude across 4 outputs.
 
@@ -413,15 +413,18 @@ class BAL():
         """
         all_predictions = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
-
+        if ground_truths == None:
+            lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
+            other = lower_model_pred
+        else:
+            other = ground_truths
         all_predictions_normalized = torch.asinh(all_predictions)
-        lower_model_pred_normalized = torch.asinh(lower_model_pred)
+        # lower_model_pred_normalized = torch.asinh(lower_model_pred)
 
-        print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
-        print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
+        # print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
+        # print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
         # makes our predictions to be for the difference
-        diffs = all_predictions_normalized - lower_model_pred_normalized # (model_count, n*ky, 4)
+        diffs = all_predictions_normalized - other # (model_count, n*ky, 4)
         print(f'Diffs have NaN: {torch.isnan(diffs).any()}')
         mean_flux = torch.mean(diffs, dim=0)  # (n*ky, 4)
         print(f'Mean Diffs 1 have NaN: {torch.isnan(mean_flux).any()}')
@@ -484,22 +487,23 @@ class BAL():
         return candidates[random_idxs[:self.cfg.initial_training_size]]
     
     def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
+        candidates, outputs = candidates
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
-        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True)
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True, ground_truths=outputs)
         print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
         print(f'Residual Std: {torch.std(diffs, dim=0)}')
         print(f'Diffs Shape: {diffs.shape}')
         sorted_candidates = candidates[diff_indices]
         sorted_eig_scores = eig_scores[diff_indices]
 
-        strata_eig_sums = []
+        strata_eig_sums = torch.zeros(size=(num_strata, 1))
         strata_size = int(np.floor(candidates.shape[0] / num_strata))
 
         for i in range(num_strata):
-            strata_eig_sums.append(torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0))
+            strata_eig_sums[i] =torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0)
         
-        strata_eig_sums = torch.tensor(strata_eig_sums)
+        # strata_eig_sums = torch.tensor(strata_eig_sums)
         
         sorted_strata_idxs = torch.argsort(strata_eig_sums, descending=True)
 
