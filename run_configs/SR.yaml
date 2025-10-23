@@ -13,15 +13,15 @@ plot: False
 dump_dir: "./latest_res"
 checkpoint_path: src/utils/700000_params.pth
 base_seed: 42
-dataset_workers: 2
-batch: 1
-epochs: 20
-steps_per_epoch: 1
-loss_freq: 1
-save_freq: 1
+dataset_workers: 8
+batch: 4096
+epochs: 200
+steps_per_epoch: 875
+loss_freq: 1000
+save_freq: 10000
 plot_freq: 35
-time_freq: 350
-time_warm: 3
+time_freq: 3500
+time_warm: 350
 # accumulation is for getting the mean and standard deviation of inputs/targets in model
 # set the steps to cover approximately 1 epoch
 accumulation_steps: 1
