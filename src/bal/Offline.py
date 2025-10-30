@@ -9,6 +9,7 @@ import os
 import h5py
 import numpy as np
 import gc
+import hashlib
 from collections import defaultdict
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
@@ -70,52 +71,6 @@ class Offline(BAL):
                         return False
             return True
 
-    def get_unused_entries(self, filter_kys=False, return_full=False):
-        """
-        LIGHTWEIGHT helper — returns indices only (sample_idx, ky_idx).
-        NOTE: This function returns indices (integers), not full tensors, to keep memory small.
-        If return_full=True, the method will also return a list of *unique* full sample indices
-        (not loaded tensors) so callers can decide when to load the tensors.
-        """
-        unused_indices = []
-        unique_sample_idxs = set()
-
-        try:
-            pool_len = len(self.pool_dataset)
-        except Exception:
-            # dataset not sized -> iterate using enumerate
-            pool_len = None
-
-        if pool_len is None:
-            iterator = enumerate(self.pool_dataset)
-        else:
-            iterator = ((i, None) for i in range(pool_len))
-
-        if pool_len is None:
-            for sample_idx, d in iterator:
-                inputs = d[0]
-                for ky_idx in range(inputs.shape[0]):
-                    params = inputs[ky_idx]
-                    if filter_kys and np.isclose(params[-1].detach().cpu().numpy(), 0):
-                        continue
-                    if not self.pool_tracker.is_used(params):
-                        unused_indices.append((sample_idx, ky_idx))
-                        unique_sample_idxs.add(sample_idx)
-        else:
-            for sample_idx in range(pool_len):
-                inputs, _ = self.pool_dataset[sample_idx]
-                for ky_idx in range(inputs.shape[0]):
-                    params = inputs[ky_idx]
-                    if filter_kys and np.isclose(params[-1].detach().cpu().numpy(), 0):
-                        continue
-                    if not self.pool_tracker.is_used(params):
-                        unused_indices.append((sample_idx, ky_idx))
-                        unique_sample_idxs.add(sample_idx)
-
-        if return_full:
-            return unused_indices, list(unique_sample_idxs)
-        return unused_indices
-
     @torch.no_grad()
     def sample_candidates(self, n_samples, dist_json_path=None, save_dir=None):
         """
@@ -140,15 +95,15 @@ class Offline(BAL):
             "masks": []
         }
 
-        for sample_idx, (inp, tflux) in enumerate(pool_iter):
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
             inp = inp.detach().cpu()
             tflux = tflux.detach().cpu()
             nky = inp.shape[0]
 
+            if self.pool_tracker.is_used(inp[0]):
+                continue
+
             for ky_idx in range(nky):
-                params = inp[ky_idx]
-                if self.pool_tracker.is_used(params):
-                    continue
 
                 total_unused += 1
                 if len(reservoir) < n_samples:
@@ -252,13 +207,28 @@ class Offline(BAL):
 
             h5f.close()
 
+        # Step 5: Sanity check — ensure none of the picked candidates are already marked as used
+        dupe_count = 0
+        for i, candidate in enumerate(final_candidates):
+            if self.pool_tracker.is_used(candidate):
+                dupe_count += 1
+                # print(f"⚠️ Candidate {i} is already in the used set!")
+
+        if dupe_count == 0:
+            print("✅ All sampled candidates are new (no overlap with used set).")
+        else:
+            print(f"⚠️ {dupe_count} candidates were already marked as used!")
+
         del candidates, outputs, reservoir, sample_to_kys
         gc.collect()
         torch.cuda.empty_cache()
 
         return final_candidates, final_outputs
 
-
+    def make_hash(self, input_tensor):
+        # Use first 31 dims rounded to uniqueness tolerance
+        arr = input_tensor[:31].detach().cpu().numpy().astype(np.float32)
+        return hashlib.sha1(arr.tobytes()).hexdigest()
 
     def save_new_samples_as_h5(self, dataset_cfg, new_samples_full, save_dir, filename="new_data.h5"):
         """
@@ -343,7 +313,7 @@ class Offline(BAL):
         """
         Keep your original read_h5_dataset but unchanged in semantics. If build_index=True,
         returns (combined_matrix, target_flux_per_ky, lookup) where lookup is a small
-        dictionary mapping rounded input tuples -> (sample_idx, ky_idx) for O(1) lookups.
+        dictionary mapping rounded input tuples -> (sample_idx, 0) for O(1) lookups.
         """
         input_keys = cfg.input_keys
         target_keys = cfg.target_keys
@@ -386,9 +356,13 @@ class Offline(BAL):
         if build_index:
             lookup = {}
             for idx in range(combined_matrix.shape[0]):
-                for j in range(combined_matrix.shape[1]):
-                    key = tuple(np.round(combined_matrix[idx, j], 8))
-                    lookup[key] = (idx, j)
+                # Use only first 31 dims (physical params, exclude ky at position -1)
+                # Map physical params -> (sample_idx, first_ky_idx)
+                # This gives us the sample index for any matching physical params
+                arr = combined_matrix[idx, 0, :-1].astype(np.float32)  # First 31 dims
+                key = hashlib.sha1(arr.tobytes()).hexdigest()
+                if key not in lookup:
+                    lookup[key] = (idx, 0)
             return combined_matrix, target_flux_per_ky, lookup
 
         return combined_matrix, target_flux_per_ky

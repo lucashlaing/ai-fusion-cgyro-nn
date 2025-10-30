@@ -27,9 +27,10 @@ class BAL():
             self.acq_func = self.random_sample
         elif run_cfg.bal.acquisition_function == 'eig_stratified':
             self.acq_func = self.eig_stratified_sample
-        # TODO: for Lucas to test
         elif run_cfg.bal.acquisition_function == 'direct':
             self.acq_func = self.direct_sample
+        elif run_cfg.bal.acquisition_function == 'gaussian':
+            self.acq_func = self.gaussian_sample
         else:
             print(f'Warning: undefined acquisition function given: {run_cfg.bal.acquisition_function}')
     
@@ -473,19 +474,48 @@ class BAL():
     
     def random_sample(self, candidates_tuple, trainer, lowerTrainer):
         candidates, output = candidates_tuple
-        # candidates shape: (n_candidates, n_features)
-        random_idxs = torch.randperm(candidates.shape[0])
-        print("Random candidates found")
-        return candidates[random_idxs[:self.cfg.new_sample_size]]
-    
+        # candidates shape: (sum_ky, 32) - all ky slices from all sampled physical locations
+        
+        # Deduplicate by physical parameters (first 31 dims)
+        unique_samples = []
+        seen_hashes = set()
+        
+        for i in range(candidates.shape[0]):
+            candidate = candidates[i]
+            key = self.make_hash(candidate)
+            
+            # Skip if we've already seen this physical location
+            if key in seen_hashes:
+                continue
+            
+            unique_samples.append(candidate)
+            seen_hashes.add(key)
+        
+        # Now randomly sample from all unique candidates
+        if len(unique_samples) < self.cfg.new_sample_size:
+            print(f"Warning: Only found {len(unique_samples)} unique samples (requested {self.cfg.new_sample_size})")
+            num_to_sample = len(unique_samples)
+        else:
+            num_to_sample = self.cfg.new_sample_size
+        
+        unique_samples_tensor = torch.stack(unique_samples)
+        random_idxs = torch.randperm(unique_samples_tensor.shape[0])
+        
+        print(f"Random candidates found: {num_to_sample} samples from {len(unique_samples)} unique")
+        return unique_samples_tensor[random_idxs[:num_to_sample]]
+
     def get_initial_dataset(self, init_training_size):
         train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
-        candidates, outputs = self.sample_candidates(init_training_size, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features)
+        candidates_tuple = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)
+        
+            # Use random_sample with temporarily modified config
+        original_size = self.cfg.new_sample_size
+        self.cfg.new_sample_size = self.cfg.initial_training_size
+        result = self.random_sample(candidates_tuple, None, None)
+        self.cfg.new_sample_size = original_size
+        
+        return result
 
-        random_idxs = torch.randperm(candidates.shape[0])
-        print("Random candidates found")
-        return candidates[random_idxs[:self.cfg.initial_training_size]]
-    
     def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
         candidates, outputs = candidates
         eig_scores, eig_indices = self.eig(candidates, trainer)
@@ -551,7 +581,31 @@ class BAL():
         newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func, train_outputs)
 
         return newCandidates
+
+    def gaussian_sample(self, candidates, trainer, lowerTrainer):
         
+        directWrapper = DIRECT(lowerTrainer, trainer, self.pool_tracker)
+        classify_func = directWrapper.log_mse
+        num_classes = 5
+
+        # getting the train data
+        # train_inputs = list(self.dataset)
+        train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        train_outputs = torch.cat([x[1] for x in self.dataset], dim=0)
+        print(f"train inputs are {train_inputs.shape}")
+        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes, True)
+
+        train_data = (train_inputs, train_labels)
+        print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
+
+        print(f"candidates shape is {candidates[0].shape}")
+        print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs):
+        # candidates is already a tuple of (inputs, outputs) from Offline.sample_candidates
+        # Pass ground truth training outputs for TGLF-SiNN data
+        newCandidates = directWrapper.gaussian_sampling(train_data, candidates, num_classes, self.cfg.new_sample_size, train_outputs)
+
+        return newCandidates
 
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """

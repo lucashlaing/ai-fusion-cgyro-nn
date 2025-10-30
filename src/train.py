@@ -73,8 +73,8 @@ def run_train(cfg):
         model = MODEL_HANDLER[project_name](cfg.model)
 
     # Dataset pipes
-    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train", False)
+    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test", False)
 
     # Trainer creation
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
@@ -132,12 +132,6 @@ def run_train(cfg):
             print("Train data contains NaN, skipping this batch.")
             continue
 
-        # Debug prints (you can remove these once everything is stable)
-        try:
-            print("The shape of the train data's input is", train_data[0].shape)
-            print("The shape of the train data's output is", train_data[1].shape)
-        except Exception:
-            pass
 
         # Log loss/metrics occasionally
         if (

@@ -1,17 +1,17 @@
 defaults:
   - bal: default
   - dataset: SR_full_madcut
-  - model: SR
-  - opt: SR
+  - model: CGYRO
+  - opt: CGYRO
   - _self_
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none
 
 project: SR
-board: False
+board: True
 plot: False
 dump_dir: "./latest_res"
-checkpoint_path: src/utils/700000_params.pth
+checkpoint_path: "./checkpoints/model_final_checkpoint.pth"
 base_seed: 42
 dataset_workers: 8
 batch: 4096

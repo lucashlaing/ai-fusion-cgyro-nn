@@ -3,6 +3,7 @@ import torch
 import hydra
 import wandb
 import pytz
+import hashlib
 from datetime import datetime
 import h5py
 import numpy as np
@@ -44,7 +45,7 @@ def run_train(cfg):
     print("stamp: {}".format(time_stamp))
 
     project_name = cfg.project
-    full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool", False)
+    full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool", False)
     pool_tracker = UsageTracker()
 
     # Number of iterations to train / run BAL
@@ -102,17 +103,23 @@ def run_train(cfg):
    
     candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
     for j in range(new_samples.shape[0]):
-        sample = new_samples[j,:]
+        sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
         full_sample = find_in_dataset(candidate_list, sample)
         if full_sample is not None:
-            # mark the new candidates as used from our pool
-            found_input = full_sample[0]
+            # full_sample[0] has shape (nky, 32) - all ky slices
+            # full_sample[1] has shape (nky, 4) - all flux outputs
+            
+            # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
+            found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
+            
             if pool_tracker.is_used(found_input):
                 print(f'Warning: acquired duplicate candidates')
+                print(f'Physical params: {found_input[:31]}')
+                print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                 continue
+                
             pool_tracker.mark_used(found_input)
-            new_samples_full.append(full_sample)
-            # print(f'Saved new sample')
+            new_samples_full.append(full_sample)  # Save the FULL sample with all ky
         else:
             print(f'Query could not be matched in pool')
 
@@ -129,6 +136,7 @@ def run_train(cfg):
     print_gpu_mem("after gathering initial dataset")
     # moved model outside to continue training over BAL runs
     model =  MODEL_HANDLER["SR"](cfg.model)
+    load_prev_model(model, cfg.checkpoint_path)
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
         # 
@@ -223,14 +231,19 @@ def run_train(cfg):
     
         if cfg.board:
             wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
+
+        print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        print(f"pool_tracker id in BAL: {id(bal.pool_tracker)}")
         
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
             break
 
         print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
+        print(f"Pool tracker has {len(pool_tracker.used)} used samples before sampling")
         new_samples = bal.propose_samples(trainer, base_trainer)
+        print(f"Pool tracker has {len(pool_tracker.used)} used samples after propose_samples")
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 
@@ -241,17 +254,23 @@ def run_train(cfg):
     
         candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
         for j in range(new_samples.shape[0]):
-            sample = new_samples[j,:]
+            sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
             full_sample = find_in_dataset(candidate_list, sample)
             if full_sample is not None:
-                # mark the new candidates as used from our pool
-                found_input = full_sample[0]
+                # full_sample[0] has shape (nky, 32) - all ky slices
+                # full_sample[1] has shape (nky, 4) - all flux outputs
+                
+                # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
+                found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
+                
                 if pool_tracker.is_used(found_input):
                     print(f'Warning: acquired duplicate candidates')
+                    print(f'Physical params: {found_input[:31]}')
+                    print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                     continue
+                    
                 pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)
-                # print(f'Saved new sample')
+                new_samples_full.append(full_sample)  # Save the FULL sample with all ky
             else:
                 print(f'Query could not be matched in pool')
 
@@ -302,7 +321,11 @@ def ragged_collate(batch):
 
 def find_in_dataset(candidate_list, query_tensor):
     combined_matrix, target_flux_per_ky, lookup = candidate_list
-    key = tuple(query_tensor.cpu().numpy().round(8))
+    
+    # Use same hashing as UsageTracker
+    arr = query_tensor[:31].cpu().numpy().astype(np.float32)
+    key = hashlib.sha1(arr.tobytes()).hexdigest()
+    
     if key not in lookup:
         return None
     idx, j = lookup[key]

@@ -8,8 +8,13 @@ class UsageTracker:
         self.used = set()
 
     def _make_key(self, input_tensor: torch.Tensor) -> str:
-        """Hash the input features into a short unique key."""
-        arr = input_tensor.detach().cpu().numpy().astype(np.float32)
+        """Hash the input features into a short unique key.
+        Only uses first 31 dims (physical parameters, not ky)."""
+        # Only hash first 31 dimensions to match physical parameters
+        assert input_tensor.ndim == 1, f"Expected 1D tensor, got shape {tuple(input_tensor.shape)}"
+        assert input_tensor.shape[0] in (31, 32), f"Expected tensor of length 31 or 32, got {input_tensor.shape[0]}"
+
+        arr = input_tensor[:31].detach().cpu().numpy().astype(np.float32)
         return hashlib.sha1(arr.tobytes()).hexdigest()
 
     def mark_used(self, input_tensor: torch.Tensor):
@@ -20,10 +25,6 @@ class UsageTracker:
     def is_used(self, input_tensor: torch.Tensor) -> bool:
         key = self._make_key(input_tensor)
         return key in self.used
-
-    def filter_unused(self, candidates: list[torch.Tensor]):
-        """Return only candidates not yet marked as used."""
-        return [c for c in candidates if not self.is_used(c)]
 
     def save(self, path: str):
         with open(path, "w") as f:
