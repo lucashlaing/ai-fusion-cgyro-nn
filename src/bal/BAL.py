@@ -555,7 +555,7 @@ class BAL():
                 
             strata_eig_idxs = torch.argsort(sorted_eig_scores[strata_index*strata_size : (strata_index+1)*strata_size], dim=0)
             # Take highest-EIG samples in strata, only completing once budget has been saturated
-            strata_samples = torch.zeros(size=(num_strata_samples, 1))
+            strata_samples = torch.zeros(size=(num_strata_samples, candidates.shape[1]))
             num_unique_samples = 0
             for i in range(strata_eig_idxs.shape[0]):
                 sample = sorted_candidates[strata_eig_idxs[i]]
