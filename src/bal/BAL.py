@@ -8,6 +8,7 @@ from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
 from bal.DIRECT import DIRECT
+from utils import UsageTracker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -516,29 +517,32 @@ class BAL():
         
         return result
 
-    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
+    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
         candidates, outputs = candidates
         eig_scores, eig_indices = self.eig(candidates, trainer)
+        combined_scores = torch.zeros(len(candidates))
+        combined_scores[eig_indices] += eig_scores
+
         print("EIG Done")
         diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True, ground_truths=outputs)
         print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
         print(f'Residual Std: {torch.std(diffs, dim=0)}')
         print(f'Diffs Shape: {diffs.shape}')
         sorted_candidates = candidates[diff_indices]
-        sorted_eig_scores = eig_scores[diff_indices]
+        sorted_eig_scores = combined_scores[diff_indices]
 
         strata_eig_sums = torch.zeros(size=(num_strata, 1))
         strata_size = int(np.floor(candidates.shape[0] / num_strata))
 
         for i in range(num_strata):
             strata_eig_sums[i] =torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0)
-        
-        # strata_eig_sums = torch.tensor(strata_eig_sums)
-        
+      
         sorted_strata_idxs = torch.argsort(strata_eig_sums, descending=True)
 
         proposed_samples = torch.zeros_like(candidates[0,:].unsqueeze(0))
         total_samples_collected = 0
+
+        sample_tracker = UsageTracker()
         for i in range(len(strata_weights)):
             strata_index = sorted_strata_idxs[i]
             print(f'Strata Index: {strata_index}')
@@ -550,10 +554,26 @@ class BAL():
             total_samples_collected += num_strata_samples
                 
             strata_eig_idxs = torch.argsort(sorted_eig_scores[strata_index*strata_size : (strata_index+1)*strata_size], dim=0)
-            strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+            # Take highest-EIG samples in strata, only completing once budget has been saturated
+            strata_samples = torch.zeros(size=(num_strata_samples, 1))
+            num_unique_samples = 0
+            for i in range(strata_eig_idxs.shape[0]):
+                sample = sorted_candidates[strata_eig_idxs[i]]
+                # Only add non-duplicate samples
+                if num_unique_samples == num_strata_samples:
+                    break
+                if not sample_tracker.is_used(sample):
+                    sample_tracker.mark_used(sample)
+                    strata_samples[num_unique_samples] = sample
+                    num_unique_samples += 1
+            
+            # strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+
+            # Add strata samples to proposed samples
             proposed_samples = torch.concat([proposed_samples, strata_samples], dim=0)
-            print(f'Strata Samples {i}: {strata_samples.shape[0]}')
+
         print(f'EIG Strat Proposed Samples have NaN: {torch.isnan(proposed_samples).any()}')
+        print(f'Proposed Samples Shape: {proposed_samples[1:].shape}')
         return proposed_samples[1:] #remove first element, as it is a zero tensor
     
     def direct_sample(self, candidates, trainer, lowerTrainer):
