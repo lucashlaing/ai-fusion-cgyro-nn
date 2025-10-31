@@ -91,7 +91,8 @@ def run_train(cfg):
     # set up initial training set
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker) 
-    
+
+    print(f'BAL Type: {type(bal)}')
     print(f'Acquiring initial train dataset')
     new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
 
@@ -107,9 +108,11 @@ def run_train(cfg):
         if full_sample is not None:
             # mark the new candidates as used from our pool
             found_input = full_sample[0]
+            print(found_input.shape)
             if pool_tracker.is_used(found_input):
                 print(f'Warning: acquired duplicate candidates')
                 continue
+            print(f'Acquired new candidate, marking as used')
             pool_tracker.mark_used(found_input)
             new_samples_full.append(full_sample)
             # print(f'Saved new sample')
@@ -117,6 +120,7 @@ def run_train(cfg):
             print(f'Query could not be matched in pool')
 
     total_num_samples = len(new_samples_full)
+
     print(f'Number of acquired samples for initial train: {total_num_samples}')
 
 
@@ -228,44 +232,52 @@ def run_train(cfg):
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
             break
-
-        print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
-        new_samples = bal.propose_samples(trainer, base_trainer)
-        save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
-        print(f"Candidates saved at {save_path}")
-
-        # Add the new candidates to our train folder
-        train_dir = os.path.join(cfg.dataset.dataset_root, "train")
-        candidate_file = os.path.join(train_dir, "candidates.h5")
-        new_samples_full = []
     
-        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
-        for j in range(new_samples.shape[0]):
-            sample = new_samples[j,:]
-            full_sample = find_in_dataset(candidate_list, sample)
-            if full_sample is not None:
-                # mark the new candidates as used from our pool
-                found_input = full_sample[0]
-                if pool_tracker.is_used(found_input):
-                    print(f'Warning: acquired duplicate candidates')
-                    continue
-                pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)
-                # print(f'Saved new sample')
+        print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
+        new_samples_full = []
+        while True:
+            new_samples = bal.propose_samples(trainer, base_trainer)
+            save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
+            print(f"Candidates saved at {save_path}")
+
+            # Add the new candidates to our train folder
+            train_dir = os.path.join(cfg.dataset.dataset_root, "train")
+            candidate_file = os.path.join(train_dir, "candidates.h5")
+        
+            candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
+            for j in range(new_samples.shape[0]):
+                sample = new_samples[j,:]
+                full_sample = find_in_dataset(candidate_list, sample)
+                if full_sample is not None:
+                    # mark the new candidates as used from our pool
+                    found_input = full_sample[0]
+                    print(found_input.shape)
+                    if pool_tracker.is_used(found_input):
+                        print(f'Warning: acquired duplicate candidates')
+                        continue
+                    pool_tracker.mark_used(found_input)
+                    new_samples_full.append(full_sample)
+                    if len(new_samples_full) >= cfg.bal.new_sample_size:
+                        break
+                else:
+                    print(f'Query could not be matched in pool')
+
+            print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+            # cleaning up memory 
+            del candidate_list
+            os.remove(candidate_file)
+            print("Candidate file deleted successfully")
+
+            num_acq = len(new_samples_full)
+            print(f'Number of acquired samples: {num_acq}')
+            if num_acq >= cfg.bal.new_sample_size:
+                print(f'Acquired all requested samples, completed acquisition')
+                break
             else:
-                print(f'Query could not be matched in pool')
-
-        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
-        # cleaning up memory 
-        del candidate_list
-        os.remove(candidate_file)
-        print("Candidate file deleted successfully")
-
-        num_acq = len(new_samples_full)
-        num_acquired_samples.append(num_acq)
-        print(f'Number of acquired samples: {num_acq}')
-        np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
-        total_num_samples += num_acq
+                print(f'Acquired {num_acq}/{cfg.bal.new_sample_size} samples, repeating acquisition')
+            total_num_samples += num_acq
+            num_acquired_samples.append(num_acq)
+            np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
         if cfg.board:
             wandb.log({"BAL/iteration": i, "BAL/num_samples": num_acq})
             wandb.log({"BAL/iteration": i, "BAL/total_samples": total_num_samples})
