@@ -4,9 +4,13 @@ import time
 import os
 import h5py
 import numpy as np
+import hashlib
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+from pathlib import Path
+from bal.sample_data import generate_samples
+from bal.generate_ky_spectra import load_npy_or_npz, compute_ky_matrix_skip_bad
 from bal.DIRECT import DIRECT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -36,60 +40,60 @@ class BAL():
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
-        Sample candidate inputs using bounded normal sampling.
+        Generate physics-consistent candidate samples using sample_data.py + generate_ky_spectra.py.
 
-        If self.has_spectra is True:
-            Return shape (n_samples, 24, 32) with 31 base features + 1 k_y.
-        Else:
-            Return shape (n_samples, 31).
+        Returns:
+            Tensor of shape (n_kept, 32) = 31 base features + 1 randomly selected ky value.
         """
+        out_dir = Path("generated_candidates")
+        out_dir.mkdir(exist_ok=True, parents=True)
 
-        # HARD CODED KY VALUES
-        KY_LOCS = [
-            0.06010753, 0.12021505, 0.18032258, 0.2404301, 0.30053763, 0.54096774,
-            0.66118279, 0.78139784, 0.90161289, 1.02182795, 1.142043, 1.26225805,
-            1.20215052, 1.5988144, 2.12677655, 2.82962789, 3.76547314, 5.01177679,
-            6.67183152, 8.88339377, 11.8302146, 15.75743919, 20.99217655, 27.97098031
-        ]
+        # --- Step 1: Read rho labels from JSON ---
+        with open(dist_json_path, "r") as f:
+            stats_by_rho = json.load(f)
+        rho_labels = sorted(stats_by_rho.keys(), key=lambda s: float(s))
+        n_rhos = len(rho_labels)
 
-        with open(dist_json_path, 'r') as f:
-            dist = json.load(f)
+        samples_per_rho = max(1, n_samples // n_rhos)
+        remainder = n_samples - samples_per_rho * (n_rhos - 1)
+        print(f"Distributing {n_samples} total samples across {n_rhos} rho values...")
 
-        var_names = sorted(dist.keys())
-        means = torch.tensor([dist[var]["mean"] for var in var_names])
-        stds = torch.tensor([dist[var]["std"] for var in var_names])
-        min_bounds = torch.tensor([dist[var]["min"] for var in var_names])
-        max_bounds = torch.tensor([dist[var]["max"] for var in var_names])
+        grad_r0 = getattr(self.cfg, "grad_r0", 1.23314445670738)
+        seed = getattr(self.cfg, "seed", 42)
+        rng = np.random.default_rng(seed)
 
-        range_bounds = max_bounds - min_bounds
-        min_bounds -= buffer_ratio * range_bounds
-        max_bounds += buffer_ratio * range_bounds
+        # --- Step 2: Generate samples once for all rho ---
+        generate_samples(dist_json_path, str(out_dir), n=samples_per_rho, seed=seed)
 
-        # Rejection sampling
-        samples = []
-        attempts = 0
-        max_attempts = 10000 * n_samples
+        all_final = []
 
-        while len(samples) < n_samples and attempts < max_attempts:
-            sample = torch.normal(means, stds)
-            if torch.all(sample >= min_bounds) and torch.all(sample <= max_bounds):
-                samples.append(sample)
-            attempts += 1
+        # --- Step 3: Process each rho separately ---
+        for i, rho_label in enumerate(rho_labels):
+            npy_path = out_dir / f"samples_rho_{rho_label}.npy"
+            if not npy_path.exists():
+                raise FileNotFoundError(f"Missing {npy_path}")
 
-        if len(samples) < n_samples:
-            raise RuntimeError(f"Only sampled {len(samples)} after {attempts} attempts.")
+            data = load_npy_or_npz(str(npy_path))
+            ky_mat, inputs_kept, kept_idx, skipped_idx = compute_ky_matrix_skip_bad(data, grad_r0)
 
-        x_samples = torch.stack(samples)  # shape: (n_samples, 31)
+            print(f"[rho={rho_label}] kept {len(kept_idx)} / {data.shape[0]} valid samples")
 
-        if self.has_spectra:
-            # Add 24 k_y values as the 32nd feature
-            ky_tensor = torch.tensor(KY_LOCS, dtype=torch.float32)  # (24,)
-            ky_expanded = ky_tensor.unsqueeze(0).repeat(n_samples, 1)  # (n_samples, 24)
-            x_expanded = x_samples.unsqueeze(1).repeat(1, 24, 1)  # (n_samples, 24, 31)
-            final_input = torch.cat([x_expanded, ky_expanded.unsqueeze(-1)], dim=-1)  # (n_samples, 24, 32)
-            return final_input
-        else:
-            return x_samples  # (n_samples, 31)
+            # Randomly choose one ky per sample
+            n_kept, nky = ky_mat.shape
+            random_indices = rng.integers(0, nky, size=n_kept)
+            ky_vals = ky_mat[np.arange(n_kept), random_indices].reshape(-1, 1)
+
+            # Combine base inputs + one ky column
+            combined = np.hstack([inputs_kept, ky_vals])
+            all_final.append(combined)
+
+        # --- Step 4: Combine and convert to tensor ---
+        all_final = np.vstack(all_final)
+        x_samples = torch.tensor(all_final, dtype=torch.float32)
+
+        print(f"\n✅ Generated total {x_samples.shape[0]} samples of shape {x_samples.shape}")
+        return x_samples  # (n_kept, 32)
+
 
     def get_prediction(self, input, model):
             """
@@ -122,6 +126,11 @@ class BAL():
 
             return torch.stack(predictions_per_ky, dim=0)
     
+    def make_hash(self, input_tensor):
+        # Use first 31 dims rounded to uniqueness tolerance
+        arr = input_tensor[:31].detach().cpu().numpy().astype(np.float32)
+        return hashlib.sha1(arr.tobytes()).hexdigest()
+
     def ragged_collate(self, batch):
         """
         Collate function for DataLoader to handle variable nky per sample.
@@ -445,6 +454,15 @@ class BAL():
         print("Candidates found")
         end = time.time()
         print("Time to find candidates: ", str(end - start))
+        # Minimal debug: print candidate type and primary shape (1-2 lines)
+        try:
+            print("candidates shape:", candidates.shape)
+        except Exception:
+            # fallback for tuple/list-like candidates
+            try:
+                print("candidates[0] shape:", candidates[0].shape)
+            except Exception:
+                print("candidates type:", type(candidates))
 
         proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
         print("Proposed samples")
@@ -472,8 +490,8 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self, candidates_tuple, trainer, lowerTrainer):
-        candidates, output = candidates_tuple
+    def random_sample(self, candidates, trainer, lowerTrainer):
+        # candidates, output = candidates_tuple
         # candidates shape: (sum_ky, 32) - all ky slices from all sampled physical locations
         
         # Deduplicate by physical parameters (first 31 dims)

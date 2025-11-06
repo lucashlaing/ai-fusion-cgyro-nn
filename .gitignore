@@ -9,3 +9,4 @@ test_data/
 *.csv
 node_modules/
 *.pth
+generated_tglf_inputs/
