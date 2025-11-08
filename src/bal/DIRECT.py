@@ -6,9 +6,9 @@ import hashlib
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class DIRECT():
-    def __init__(self, tglf_trainer, cgyro_trainer, pool_tracker):
+    def __init__(self, tglf_model, cgyro_trainer, pool_tracker = None):
         # super().__init__(run_cfg, dataset, pool_dataset, pool_tracker)
-        self.tglf_trainer = tglf_trainer
+        self.tglf_model = tglf_model
         self.cgyro_trainer = cgyro_trainer
         self.pool_tracker = pool_tracker
     
@@ -30,7 +30,7 @@ class DIRECT():
         input_chunks = torch.split(input, chunk_size, dim=0)
 
         with torch.no_grad():
-            model.eval()  # Set model to evaluation mode (Dropout off)
+            # model.eval()  # Set model to evaluation mode (Dropout off)
             for chunk in input_chunks:
                 pred = model(chunk.to(device))
                 predictions.append(pred.cpu())
@@ -360,7 +360,7 @@ class DIRECT():
             all_outputs = torch.concatenate([train_outputs, candidates_outputs], dim=0)
         else:
             # Fallback to TGLF model predictions for training data
-            train_outputs_pred = self.get_predictions(train_inputs, self.tglf_trainer.model)
+            train_outputs_pred = self.get_predictions(train_inputs, self.tglf_model)
             all_outputs = torch.concatenate([train_outputs_pred, candidates_outputs], dim=0)
         tglf_all_predictions = all_outputs
         
@@ -431,124 +431,84 @@ class DIRECT():
         # Ensure returning a tensor 
         return picked_inputs
 
-    def gaussian_sampling(self, train_data, candidates, num_classes, B_train, train_outputs=None,
+    def gaussian_sampling(self, train_inputs, candidates, num_classes, B_train, train_outputs=None,
         num_rounds=5, uniqueness_tol=1e-8,):
         """
-        Gaussian sampling acquisition function.
+        Gaussian sampling acquisition function
         Args:
-            train_data: tuple (train_inputs, train_labels)
-            candidates: tuple (candidate_inputs, candidate_outputs)
+            train_inputs: training inputs (used only for reference / normalization)
+            candidates: candidate pool for selection
             num_classes: total number of classes
             B_train: total acquisition budget
             train_outputs: optional ground truth for training data
             num_rounds: number of stochastic predictions
-            uniqueness_tol: tolerance for uniqueness check on first 31 dims
+            uniqueness_tol: tolerance for uniqueness check
         """
-        train_inputs, train_labels = train_data
-        candidate_inputs, candidate_outputs = candidates
-        print("Candidate_input shape ", candidate_inputs.shape)
-        N_train = train_inputs.shape[0]
-        N_candidates = candidate_inputs.shape[0]
 
-        # Combine train + candidates
-        all_inputs = torch.cat([train_inputs, candidate_inputs], dim=0)
-        all_labels = torch.cat(
-            [train_labels, torch.full((N_candidates, 1), -1, dtype=torch.long)],
-            dim=0
-        )
-        is_candidate = torch.cat(
-            [torch.zeros(N_train, dtype=torch.bool), torch.ones(N_candidates, dtype=torch.bool)],
-            dim=0
-        )
-
-        # Compute residual distributions over multiple rounds
+        N_candidates = candidates.shape[0]
         residuals_all = []
+
+        # Compute residual distributions over multiple stochastic rounds
         for r in range(num_rounds):
-            cgyro_preds = self.get_predictions(all_inputs, self.cgyro_trainer.model)
-            if train_outputs is not None:
-                tglf_preds = torch.cat([train_outputs, candidate_outputs], dim=0)
-            else:
-                tglf_train_preds = self.get_predictions(train_inputs, self.tglf_trainer.model)
-                tglf_preds = torch.cat([tglf_train_preds, candidate_outputs], dim=0)
-            residuals = torch.sum(torch.abs((tglf_preds ** 2) - (cgyro_preds ** 2)), dim=1)  # [N]
+            cgyro_preds = self.get_predictions(candidates, self.cgyro_trainer.model)
+            tglf_preds = self.get_predictions(candidates, self.tglf_model)
+            residuals = torch.sum(torch.abs((tglf_preds ** 2) - (cgyro_preds ** 2)), dim=1)
             residuals_all.append(residuals.unsqueeze(1))
-        residuals_all = torch.cat(residuals_all, dim=1)  # [N, num_rounds]
 
+        residuals_all = torch.cat(residuals_all, dim=1)  # [N_candidates, num_rounds]
+        print("Get Preds Done")
+
+        # Compute residual statistics
         residual_mean = residuals_all.mean(dim=1)
-        residual_std = residuals_all.std(dim=1) + 1e-12  # avoid divide by zero
+        residual_std = residuals_all.std(dim=1) + 1e-12  # avoid divide-by-zero
 
-        # Standardize z-scores using log_mse stored mean/std
+        # Standardize using stored normalization constants
         z_scores = (residual_mean - getattr(self, "mean", 0.0)) / (getattr(self, "std", 0.1) + 1e-12)
 
-        # Sort candidates by absolute z-score for threshold proximity
+        # Sort by absolute z-score (threshold proximity)
         sorted_vals, sorted_idx = torch.sort(torch.abs(z_scores))
-        sorted_inputs = all_inputs[sorted_idx]
-        sorted_labels = all_labels[sorted_idx]
-        candidate_mask = is_candidate[sorted_idx]
+        sorted_inputs = candidates[sorted_idx]
         sorted_z_scores = z_scores[sorted_idx]
         sorted_mean = residual_mean[sorted_idx]
         sorted_std = residual_std[sorted_idx]
 
         picked_indices = []
-
         budget_per_class = B_train // num_classes
-
-        # Keep a set for uniqueness check
         seen_hashes = set()
 
-
-        # Select points per class around midpoint threshold
+        # Select points per class around midpoint thresholds
         for k in range(num_classes):
             threshold = k + 0.5  # midpoint of class bucket
 
-            # Compute probabilistic score: higher for closer to threshold and higher std
+            # Higher score for samples closer to threshold and more uncertain
             distances = torch.abs(torch.abs(sorted_z_scores) - threshold)
-            scores = sorted_std / (distances + 1e-12)  # higher = closer & uncertain
+            scores = sorted_std / (distances + 1e-12)
 
-            # Mask only candidate points not already picked
-            scores = scores * candidate_mask.float()
-
-            # Sort all candidate scores (descending)
+            # Sort candidate scores (descending)
             sorted_score_idx = torch.argsort(scores, descending=True)
 
-            # Iterate through sorted list until enough unique points are picked
             num_picked_this_class = 0
             for idx in sorted_score_idx.tolist():
-                if scores[idx] <= 0:  # skip non-candidates or invalids
-                    continue
-
                 h = self.make_hash(sorted_inputs[idx])
                 if h not in seen_hashes:
-                    picked_indices.append(sorted_idx[idx].item())  # global index
+                    picked_indices.append(sorted_idx[idx].item())
                     seen_hashes.add(h)
                     num_picked_this_class += 1
 
-                # Stop when we've filled this class's quota
                 if num_picked_this_class >= budget_per_class or len(picked_indices) >= B_train:
                     break
-            
+
             print(f"Class {k}: picked {num_picked_this_class} unique out of {budget_per_class}")
-            # If total budget reached, exit early
+
             if len(picked_indices) >= B_train:
                 break
 
         picked_indices = torch.tensor(picked_indices, dtype=torch.long)
-        picked_inputs = all_inputs[picked_indices]
+        picked_inputs = candidates[picked_indices]
 
-        # FINAL deduplication pass using pool_tracker
-        unique_picks = []
-        for i in range(picked_inputs.shape[0]):
-            if not self.pool_tracker.is_used(picked_inputs[i]):
-                unique_picks.append(picked_inputs[i])
-        
-        if len(unique_picks) < picked_inputs.shape[0]:
-            print(f"Warning: Filtered out {picked_inputs.shape[0] - len(unique_picks)} duplicates in final selection")
-        
-        picked_inputs = torch.stack(unique_picks) if unique_picks else torch.empty((0, picked_inputs.shape[1]))
-        
         print(f"Total selected: {picked_inputs.shape[0]} / Budget: {B_train}")
-
         return picked_inputs
+
 
     def make_hash(self, input_tensor):
         # Use first 31 dims rounded to uniqueness tolerance

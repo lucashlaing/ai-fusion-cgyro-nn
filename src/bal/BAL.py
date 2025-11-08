@@ -410,7 +410,7 @@ class BAL():
 
         return sorted_eig_values, sorted_indices
 
-    def model_difference(self, candidates, trainer, lowerTrainer, sort=False, ground_truths=None):
+    def model_difference(self, candidates, trainer, lowerModel, sort=False, ground_truths=None):
         """
         Sort candidates by the average predicted flux magnitude across 4 outputs.
 
@@ -425,7 +425,7 @@ class BAL():
         all_predictions = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
         if ground_truths == None:
-            lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
+            lower_model_pred = self.get_prediction(candidates, lowerModel)
             other = lower_model_pred
         else:
             other = ground_truths
@@ -448,7 +448,7 @@ class BAL():
         else:
             return mean_flux, torch.arange(0, mean_flux.shape[0])
     
-    def propose_samples(self, trainer, lowerTrainer):
+    def propose_samples(self, trainer, lowerModel):
         train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
         start = time.time()
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features) or tuple for Offline
@@ -465,11 +465,11 @@ class BAL():
             except Exception:
                 print("candidates type:", type(candidates))
 
-        proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
+        proposed_samples = self.acq_func(candidates, trainer, lowerModel)
         print("Proposed samples")
         return proposed_samples
     
-    def eig_sample(self, candidates_tuple, trainer, lowerTrainer):
+    def eig_sample(self, candidates_tuple, trainer, lowerModel):
         # Each returns (scores, indices) where indices are into `candidates`
         # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
         # print("model difference Done")
@@ -491,7 +491,7 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self, candidates, trainer, lowerTrainer):
+    def random_sample(self, candidates, trainer, lowerModel):
         # candidates, output = candidates_tuple
         # candidates shape: (sum_ky, 32) - all ky slices from all sampled physical locations
         
@@ -535,14 +535,14 @@ class BAL():
         
         return result
 
-    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
+    def eig_stratified_sample(self, candidates, trainer, lowerModel, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
         candidates, outputs = candidates
         eig_scores, eig_indices = self.eig(candidates, trainer)
         combined_scores = torch.zeros(len(candidates))
         combined_scores[eig_indices] += eig_scores
 
         print("EIG Done")
-        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True, ground_truths=outputs)
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerModel, sort=True, ground_truths=outputs)
         print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
         print(f'Residual Std: {torch.std(diffs, dim=0)}')
         print(f'Diffs Shape: {diffs.shape}')
@@ -594,9 +594,9 @@ class BAL():
         print(f'Proposed Samples Shape: {proposed_samples[1:].shape}')
         return proposed_samples[1:] #remove first element, as it is a zero tensor
     
-    def direct_sample(self, candidates, trainer, lowerTrainer):
+    def direct_sample(self, candidates, trainer, lowerModel):
         
-        directWrapper = DIRECT(lowerTrainer, trainer)
+        directWrapper = DIRECT(lowerModel, trainer)
 
         num_classes = 5
         classify_func = directWrapper.log_mse
@@ -620,28 +620,36 @@ class BAL():
 
         return newCandidates
 
-    def gaussian_sample(self, candidates, trainer, lowerTrainer):
+    def gaussian_sample(self, candidates, trainer, lowerModel):
         
-        directWrapper = DIRECT(lowerTrainer, trainer, self.pool_tracker)
+        directWrapper = DIRECT(lowerModel, trainer)
         classify_func = directWrapper.log_mse
         num_classes = 5
 
         # getting the train data
         # train_inputs = list(self.dataset)
-        train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
-        train_outputs = torch.cat([x[1] for x in self.dataset], dim=0)
-        print(f"train inputs are {train_inputs.shape}")
+        inputs_list = []
+        outputs_list = []
+
+        # Loop just one time
+        for x_input, y_output in self.dataset:
+            inputs_list.append(x_input)
+            outputs_list.append(y_output)
+
+        # Concatenate after the single loop
+        train_inputs = torch.cat(inputs_list, dim=0)
+        train_outputs = torch.cat(outputs_list, dim=0)
+
+        # to get mean and std saved in direct for use later
         train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes, True)
 
-        train_data = (train_inputs, train_labels)
-        print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
-
-        print(f"candidates shape is {candidates[0].shape}")
+        print(f"train inputs are {train_inputs.shape}")
+        print(f"candidates shape is {candidates.shape}")
         print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
         # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs):
         # candidates is already a tuple of (inputs, outputs) from Offline.sample_candidates
         # Pass ground truth training outputs for TGLF-SiNN data
-        newCandidates = directWrapper.gaussian_sampling(train_data, candidates, num_classes, self.cfg.new_sample_size, train_outputs)
+        newCandidates = directWrapper.gaussian_sampling(train_inputs, candidates, num_classes, self.cfg.new_sample_size, train_outputs)
 
         return newCandidates
 
