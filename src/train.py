@@ -149,17 +149,17 @@ def run_train(cfg):
     train_loopers = InfiniteDataLooper(train_loader)
     test_loopers = InfiniteDataLooper(test_loader)
 
-    # Accumulate channel mean/std if trainer supports accumulate
-    print("Accumulating channel mean and std for model...")
-    for _ in tqdm(range(cfg.accumulation_steps)):
-        data = next(train_loopers)
-        # If trainer doesn't provide accumulate, this will raise; that's expected
-        trainer.accumulate(data)
-    print("Accumulation done. The stats are:")
-    if hasattr(trainer.model, "module"):
-        trainer.model.module.report_stats()
-    else:
-        trainer.model.report_stats()
+    # # Accumulate channel mean/std if trainer supports accumulate
+    # print("Accumulating channel mean and std for model...")
+    # for _ in tqdm(range(cfg.accumulation_steps)):
+    #     data = next(train_loopers)
+    #     # If trainer doesn't provide accumulate, this will raise; that's expected
+    #     trainer.accumulate(data)
+    # print("Accumulation done. The stats are:")
+    # if hasattr(trainer.model, "module"):
+    #     trainer.model.module.report_stats()
+    # else:
+    #     trainer.model.report_stats()
 
     # Training loop
     total_steps = cfg.epochs * cfg.steps_per_epoch
@@ -188,15 +188,11 @@ def run_train(cfg):
             with torch.no_grad():
                 # Train metrics + board logging
                 # If trainer provides print_metrics, call it
-                if hasattr(trainer, "print_metrics"):
-                    trainer.print_metrics(train_data, "train")
                 if hasattr(trainer, "board_loss"):
                     trainer.board_loss(train_data, "train", cfg.board)
 
                 # Test metrics
                 test_data = next(test_loopers)
-                if hasattr(trainer, "print_metrics"):
-                    trainer.print_metrics(test_data, "test")
                 if hasattr(trainer, "board_loss"):
                     trainer.board_loss(test_data, "test", cfg.board)
 
@@ -245,14 +241,26 @@ def run_train(cfg):
         print(f"✅ Model weights saved to {save_path}")
     except Exception as e:
         print(f"❌ Failed to save final model: {e}")
-    # save_dir = "./checkpoints"
-    # os.makedirs(save_dir, exist_ok=True)
-    # save_path = os.path.join(save_dir, f"model_final_checkpoint.pth")
+    
+    # calculate test loss over entire test pool
+    current_test_loss = trainer.get_test_loss(test_loader)
+    if torch.is_tensor(current_test_loss):
+        current_test_loss = current_test_loss.detach().cpu().item()
 
-    # torch.save(model.state_dict(), save_path)
-    # print(f"✅ Model weights saved to {save_path}")
-    # Finish wandb if we initialized it
+    print("OVERALL TEST LOSS:", current_test_loss)
+    # if cfg.board:
+    #     wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
 
+    # total_num_samples += num_acq
+    # if cfg.board:
+    #     wandb.log({"BAL/iteration": i, "BAL/num_samples": num_acq})
+    #     wandb.log({"BAL/iteration": i, "BAL/total_samples": total_num_samples})
+
+    if wandb_initialized:
+        wandb.log({"BAL Test Loss": current_test_loss})
+        wandb.finish()
+
+    # START OF BAL 
     bal = BAL_HANDLER[project_name](cfg, train_datapipe)
     print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
     new_samples = bal.propose_samples(trainer, lowerModel)
@@ -297,22 +305,6 @@ def run_train(cfg):
             except Exception as e:
                 print(f"⚠️ Could not delete {dir_path}: {e}")
 
-    # calculate test loss over entire test pool
-    current_test_loss = trainer.get_test_loss(test_loader)
-    if torch.is_tensor(current_test_loss):
-        current_test_loss = current_test_loss.detach().cpu().item()
-
-    print("OVERALL TEST LOSS:", current_test_loss)
-    # if cfg.board:
-    #     wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
-
-    # total_num_samples += num_acq
-    # if cfg.board:
-    #     wandb.log({"BAL/iteration": i, "BAL/num_samples": num_acq})
-    #     wandb.log({"BAL/iteration": i, "BAL/total_samples": total_num_samples})
-
-    if wandb_initialized:
-        wandb.finish()
 
 
 def ragged_collate(batch):
