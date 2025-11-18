@@ -67,8 +67,8 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         # gt_flux_per_ky_norm = self.model._targetNormalizerPerWavenumber(gt_flux_per_ky, accumulate=False)
         # pred_flux_per_ky_norm = self.model._targetNormalizerPerWavenumber(pred_flux_per_ky, accumulate=False)
 
-        print(f'Predicted flux per ky norm: {pred_flux_per_ky}')
-        print(f'True flux per ky norm: {gt_flux_per_ky}')
+        # print(f'Predicted flux per ky norm: {pred_flux_per_ky}')
+        # print(f'True flux per ky norm: {gt_flux_per_ky}')
         # transform fluxes accordigly, asinh is must, then normalize if needed
         gt_flux_per_ky_trans = torch.asinh(gt_flux_per_ky)
         pred_flux_per_ky_trans = torch.asinh(pred_flux_per_ky)
@@ -145,19 +145,20 @@ class Spectra_Regularization_Trainer(Base_Trainer):
 
     def get_test_loss(self, dataloader):
         """
-        Calculate loss
-
-        Args:
-            dataloader: The data loader to get data.
+        Calculate average test loss safely (no gradient tracking).
         """
+        self.model.eval()
         losses = []
-        for data in dataloader:
-            data = self.move_to_device(data)
-            # For calculate losses
-            loss = self.get_loss(data)
-            losses.append(loss)
+
+        with torch.no_grad():  # disable autograd graph building
+            for data in dataloader:
+                data = self.move_to_device(data)
+                loss = self.get_loss(data)
+                # detach from graph and move to CPU as a float
+                losses.append(loss.item())
 
         return sum(losses) / len(losses)
+
     
     def get_test_rmsle(self, dataloader):
         """

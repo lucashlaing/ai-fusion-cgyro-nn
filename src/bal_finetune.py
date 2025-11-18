@@ -3,6 +3,7 @@ import torch
 import hydra
 import wandb
 import pytz
+import hashlib
 from datetime import datetime
 import h5py
 import numpy as np
@@ -44,13 +45,12 @@ def run_train(cfg):
     print("stamp: {}".format(time_stamp))
 
     project_name = cfg.project
-    full_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool", False)
     pool_tracker = UsageTracker()
 
     # Number of iterations to train / run BAL
-    # For the first iteration, do not train (no acquired data), only compute test loss and run BAL
     # For the last iteration, train but do not run further BAL
-    num_iter = cfg.bal.iterations + 2
+    num_iter = cfg.bal.iterations + 1
 
     test_losses = []
     test_rmsle = []
@@ -64,7 +64,7 @@ def run_train(cfg):
     # Trainer creation
     base_trainer = TRAINER_HANDLER[project_name](baseModel, cfg.model, cfg.opt, cfg.dataset, tc_rng)
     
-    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test", False)
     test_loader = DataLoader(
             test_datapipe,
             batch_size=cfg.batch,
@@ -82,6 +82,8 @@ def run_train(cfg):
             config=OmegaConf.to_container(cfg, resolve=True),
             name=f"{time_stamp}_BAL_{cfg.bal.acquisition_function}"
         )
+        wandb.define_metric("BAL/iteration") # specific counter for BAL
+        wandb.define_metric("BAL/*", step_metric="BAL/iteration")
         with open_dict(cfg):
             cfg.run_id = wandb.run.id
             cfg.entity = wandb.run.entity
@@ -89,41 +91,56 @@ def run_train(cfg):
 
     # set up initial training set
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker) 
     
     print(f'Acquiring initial train dataset')
-    full_dataset_list = list(full_dataset)  
-    print(f'Pool size: {len(full_dataset_list)}')
-    # change to new method 
-    new_samples = bal.get_initial_dataset(len(full_dataset_list))
+    new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
 
     # Add the new candidates to our train folder
     train_dir = os.path.join(cfg.dataset.dataset_root, "train")
+    candidate_file = os.path.join(train_dir, "candidates.h5")
     new_samples_full = []
+   
+    candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
     for j in range(new_samples.shape[0]):
-        sample = new_samples[j,:]
-        idx, full_sample = find_in_dataset(full_dataset_list, sample)
-        if idx is not None:
-            # mark the new candidates as used from our pool
-            found_input = full_sample[0]
+        sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
+        full_sample = find_in_dataset(candidate_list, sample)
+        if full_sample is not None:
+            # full_sample[0] has shape (nky, 32) - all ky slices
+            # full_sample[1] has shape (nky, 4) - all flux outputs
+            
+            # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
+            found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
+            
             if pool_tracker.is_used(found_input):
                 print(f'Warning: acquired duplicate candidates')
+                print(f'Physical params: {found_input[:31]}')
+                print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                 continue
+                
             pool_tracker.mark_used(found_input)
-            new_samples_full.append(full_sample)
-            print(f'Saved new sample')
+            new_samples_full.append(full_sample)  # Save the FULL sample with all ky
         else:
             print(f'Query could not be matched in pool')
 
     total_num_samples = len(new_samples_full)
     print(f'Number of acquired samples for initial train: {total_num_samples}')
 
-    save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
+
+    print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+    # cleaning up memory 
+    del candidate_list
+    os.remove(candidate_file)
+    print("Candidate file deleted successfully")
+    bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
+    print_gpu_mem("after gathering initial dataset")
+    # moved model outside to continue training over BAL runs
+    model =  MODEL_HANDLER["SR"](cfg.model)
+    load_prev_model(model, cfg.checkpoint_path)
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
-        # Load model for finetuning
-        model =  MODEL_HANDLER["SR"](cfg.model)
-        load_prev_model(model, checkpoint_path)
+        # 
+        # load_prev_model(model, checkpoint_path)
         
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
 
@@ -188,7 +205,7 @@ def run_train(cfg):
                 trainer.save(ckpt_dir)
 
             # Training iteration
-            # trainer.iter(train_data)
+            trainer.iter(train_data)
 
             # Time estimation
             if trainer.train_step == cfg.time_warm:
@@ -197,55 +214,71 @@ def run_train(cfg):
                 ratio = (trainer.train_step - cfg.time_warm) / total_steps
                 timer.estimate_time("time estimate", ratio)
         print("Training Done")
-
+        print_gpu_mem("after training step")
         # Plot / log losses
         current_test_loss = trainer.get_test_loss(test_loader)
         if torch.is_tensor(current_test_loss):
             current_test_loss = current_test_loss.detach().cpu().item()
         test_losses.append(current_test_loss)
-        base_loss = base_trainer.get_test_loss(test_loader)
-        test_rmsle.append(trainer.get_test_rmsle(test_loader))
-        base_rmsle = base_trainer.get_test_rmsle(test_loader)
-        print(f'Test MSE: {test_losses[i]}')
-        print(f'Base Model MSE: {base_loss}')
-        print(f'Test RMSLE: {test_rmsle[i]}')
-        print(f'Base Model RMSLE: {base_rmsle}')
+        # base_loss = base_trainer.get_test_loss(test_loader)
+        # test_rmsle.append(trainer.get_test_rmsle(test_loader))
+        # base_rmsle = base_trainer.get_test_rmsle(test_loader)
+        # print(f'Test MSE: {test_losses[i]}')
+        # print(f'Base Model MSE: {base_loss}')
+        # print(f'Test RMSLE: {test_rmsle[i]}')
+        # print(f'Base Model RMSLE: {base_rmsle}')
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/test_loss_{cfg.bal.acquisition_function}.npy", test_losses)
     
         if cfg.board:
-            wandb.log({"BAL_test_loss": current_test_loss})
+            wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
+
+        print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        print(f"pool_tracker id in BAL: {id(bal.pool_tracker)}")
         
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
             break
 
         print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
+        print(f"Pool tracker has {len(pool_tracker.used)} used samples before sampling")
         new_samples = bal.propose_samples(trainer, base_trainer)
+        print(f"Pool tracker has {len(pool_tracker.used)} used samples after propose_samples")
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 
         # Add the new candidates to our train folder
         train_dir = os.path.join(cfg.dataset.dataset_root, "train")
+        candidate_file = os.path.join(train_dir, "candidates.h5")
         new_samples_full = []
-        full_dataset_list = list(full_dataset)  
-        print(f'Pool size: {len(full_dataset_list)}')
+    
+        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
         for j in range(new_samples.shape[0]):
-            sample = new_samples[j,:]
-            idx, full_sample = find_in_dataset(full_dataset_list, sample)
-            if idx is not None:
-                # mark the new candidates as used from our pool
-                found_input = full_sample[0]
-                if torch.isnan(found_input).any():
-                    print(f'Warning: acquired candidate with NaN element(s)')
+            sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
+            full_sample = find_in_dataset(candidate_list, sample)
+            if full_sample is not None:
+                # full_sample[0] has shape (nky, 32) - all ky slices
+                # full_sample[1] has shape (nky, 4) - all flux outputs
+                
+                # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
+                found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
+                
                 if pool_tracker.is_used(found_input):
                     print(f'Warning: acquired duplicate candidates')
+                    print(f'Physical params: {found_input[:31]}')
+                    print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                     continue
+                    
                 pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)
-                print(f'Saved new sample')
+                new_samples_full.append(full_sample)  # Save the FULL sample with all ky
             else:
                 print(f'Query could not be matched in pool')
+
+        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+        # cleaning up memory 
+        del candidate_list
+        os.remove(candidate_file)
+        print("Candidate file deleted successfully")
 
         num_acq = len(new_samples_full)
         num_acquired_samples.append(num_acq)
@@ -253,10 +286,10 @@ def run_train(cfg):
         np.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/num_acq_samples.npy", num_acquired_samples)
         total_num_samples += num_acq
         if cfg.board:
-            wandb.log({"num of samples": num_acq})
-            wandb.log({"total samples": total_num_samples})
+            wandb.log({"BAL/iteration": i, "BAL/num_samples": num_acq})
+            wandb.log({"BAL/iteration": i, "BAL/total_samples": total_num_samples})
 
-        save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
+        bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
     if cfg.board:
         wandb.finish()
@@ -286,149 +319,24 @@ def ragged_collate(batch):
 
     return inputs_cat, targets_cat
 
-def find_in_dataset(full_dataset, query_tensor, tol=1e-8):
-    """
-    Find the index and full sample in the dataset that matches the given query tensor.
+def find_in_dataset(candidate_list, query_tensor):
+    combined_matrix, target_flux_per_ky, lookup = candidate_list
+    
+    # Use same hashing as UsageTracker
+    arr = query_tensor[:31].cpu().numpy().astype(np.float32)
+    key = hashlib.sha1(arr.tobytes()).hexdigest()
+    
+    if key not in lookup:
+        return None
+    idx, j = lookup[key]
+    return (torch.tensor(combined_matrix[idx], dtype=torch.float32),
+            target_flux_per_ky[idx])
 
-    Parameters
-    ----------
-    full_dataset : Dataset
-        The dataset to search in.
-    query_tensor : torch.Tensor
-        The input tensor to look for.
-    tol : float
-        Tolerance for float comparison.
-
-    Returns
-    -------
-    (int, tuple) or (None, None)
-        The index and the full dataset sample, or (None, None) if not found.
-    """
-    for idx in range(len(full_dataset)):
-        # Deprecated format:
-        # input_data, target_flux_per_ky, target_flux, failed_mask = full_dataset[idx]
-
-        # Format for ky-specific samples (not 24 ky per sample)
-        input_data, target_flux_per_ky = full_dataset[idx] 
-        for j in range(input_data.shape[0]):
-            input_tensor = input_data[j] # input_data shape = (nky, 32)
-            # if np.isclose(input_tensor[-1].detach().cpu().numpy(), 0):
-            #     # Rest of ky will be zero, do not take this candidate as it has been requested for a failed ky loc
-            #     break
-            if torch.allclose(input_tensor, query_tensor, atol=tol, rtol=0, equal_nan=True):
-                if torch.isnan(input_tensor).any(axis=0) or torch.isnan(query_tensor).any(axis=0):
-                    print('Warning: found NaN in acquired input tensor')
-                return idx, (input_data[j], target_flux_per_ky[j])
-    return None, None
-
-
-def save_new_samples_as_h5(dataset_cfg, new_samples_full, save_dir, filename="new_data.h5"):
-    """
-    Save new dataset samples into an HDF5 file in the same format as the original dataset.
-
-    Parameters
-    ----------
-    dataset_cfg : omegaconf.DictConfig
-        Dataset config with input_keys, target_keys, spectra_function_keys, intermediate_target_keys, mask_key, etc.
-    new_samples_full : list of tuples
-        List of full dataset entries, where each entry is
-        (input_tensor, target_flux_per_ky, target_flux, failed_mask_tensor).
-    save_dir : str
-        Directory where the .h5 file will be written.
-    filename : str
-        Name of the new HDF5 file.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, filename)
-
-    inputs = []
-    targets = []
-    flux_per_ky = []
-    masks = []
-
-    for inp, t_flux_per_ky in new_samples_full:
-        # Each inp shape: (nky, features) — includes input features + ky values
-        input = inp.cpu().numpy()
-        inputs.append(input)
-
-        mask = input[-1] == 0
-        masks.append(mask)
-
-        t_flux_per_ky = t_flux_per_ky.cpu().numpy()
-        flux_per_ky.append(t_flux_per_ky)
-
-    inputs = np.array(inputs)       # (n_samples, n_features)
-    flux_per_ky = np.array(flux_per_ky)  # (n_samples, 4)
-    masks = np.array(masks)          # (n_samples)
-
-    # Unsqueeze dim=1 for nky=1
-    inputs = inputs[:, np.newaxis, :] # (n_samples, nky, n_features)
-    flux_per_ky = flux_per_ky[:, np.newaxis, :] # (n_samples, nky, 4)
-    masks = masks[:, np.newaxis] # (n_samples, nky)
-
-    n_samples, nky, n_features = inputs.shape
-
-    # Flux target keys
-    target_keys = [
-        "OUT_G_elec",   # fluxes[:, 0]
-        "OUT_Q_elec",   # fluxes[:, 1]
-        "OUT_Q_ions",   # fluxes[:, 2]
-        "OUT_P_ions",   # fluxes[:, 3]
-    ]
-
-    with h5py.File(save_path, "w") as f:
-        # Split input features (everything except last column = ky)
-        input_features = inputs[:, 0, :-1]  # (n_samples, n_input_features)
-        ky_values = inputs[:, :, -1]        # (n_samples, nky)
-
-        # Save input features
-        for i, key in enumerate(dataset_cfg.input_keys):
-            f.create_dataset(key, data=input_features[:, i])
-
-        # Save spectra function keys (ky)
-        for i, key in enumerate(dataset_cfg.spectra_function_keys):
-            if key == "ky":
-                f.create_dataset(key, data=ky_values)
-
-        # Save intermediate target (reconstruct sumf-like tensor)
-        if len(dataset_cfg.intermediate_target_keys) > 0:
-            n_samples, nky, _ = flux_per_ky.shape
-            ns = 3  # electrons + 2 ions
-            nf = 2  # fields
-
-            sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5)) #nky = 1
-
-            for slice_idx in range(2):
-                # electrons
-                sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = flux_per_ky[:, :, 0] / nf
-                sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = flux_per_ky[:, :, 0] / nf
-                sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = flux_per_ky[:, :, 1] / nf
-                sumf_reconstructed[:, :, slice_idx, 1, 0, 1] = flux_per_ky[:, :, 1] / nf
-
-                n_ion_species = ns - 1
-                q_ions = flux_per_ky[:, :, 2] / (n_ion_species * nf)
-                p_ions = flux_per_ky[:, :, 3] / (n_ion_species * nf)
-
-                for field_idx in range(nf):
-                    for ion_idx in range(1, ns):
-                        sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-                        sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
-
-            f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
-
-        # Meta group
-        meta_grp = f.create_group("meta")
-        meta_grp.create_dataset(dataset_cfg.mask_key, data=masks)
-        total_count_arr = np.full((n_samples,), nky, dtype=np.int32) #nky = 1
-        meta_grp.create_dataset("total_count", data=total_count_arr)
-
-        for key in f.keys():
-            if key == "fluxes":
-                flux_arr = f["fluxes"][:]
-                # Split into separate 1D arrays
-                for i, name in enumerate(target_keys):
-                    f.create_dataset(name, data=flux_arr[:, i])
-    return save_path
+def print_gpu_mem(note=""):
+    if torch.cuda.is_available():
+        alloc = torch.cuda.memory_allocated() / 1024**3
+        reserved = torch.cuda.memory_reserved() / 1024**3
+        print(f"[GPU Mem] {note} allocated={alloc:.2f} GB reserved={reserved:.2f} GB")
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):

@@ -1,13 +1,16 @@
 import torch
 import numpy as np
+import time
+import hashlib
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class DIRECT():
-    def __init__(self, tglf_trainer, cgyro_trainer):
+    def __init__(self, tglf_model, cgyro_trainer, pool_tracker = None):
         # super().__init__(run_cfg, dataset, pool_dataset, pool_tracker)
-        self.tglf_trainer = tglf_trainer
+        self.tglf_model = tglf_model
         self.cgyro_trainer = cgyro_trainer
+        self.pool_tracker = pool_tracker
     
     def get_predictions(self, input, model):
         """
@@ -27,7 +30,7 @@ class DIRECT():
         input_chunks = torch.split(input, chunk_size, dim=0)
 
         with torch.no_grad():
-            model.eval()  # Set model to evaluation mode (Dropout off)
+            # model.eval()  # Set model to evaluation mode (Dropout off)
             for chunk in input_chunks:
                 pred = model(chunk.to(device))
                 predictions.append(pred.cpu())
@@ -36,51 +39,84 @@ class DIRECT():
         all_preds_normalized = torch.asinh(all_preds)
         return all_preds
 
-    def log_mse(self, candidates, num_classes, mean, std):
+    def log_mse(self, candidates, num_classes, mean=None, std=None, recompute_stats=False):
         """
         Classifies inputs based on log ratio of TGLF to CGYRO outputs corresponding to that input.
 
         Args:
-            candidates (Tensor): Input candidate tensor
-            tglf_out (Tensor): TGLF output tensor (summed)
-            cgyro_out (Tensor): CGYRO output tensor (summed)
-            num_classes (Tensor): Total number of classes to separate into
+            candidates (tuple): Tuple of (input_candidates, output_candidates) for TGLF-SiNN data
+            num_classes (int): Total number of classes to separate into
+            mean (float, optional): Mean for standardization
+            std (float, optional): Standard deviation for standardization
+            recompute_stats (bool): Whether to recompute mean/std from the current candidates
 
         Returns:
             labels (Tensor): Labels corresponding to inputs
+            mean (float): Mean used for standardization
+            std (float): Std used for standardization
         """
-        tglf_out = self.get_predictions(candidates, self.tglf_trainer.model)
-        cgyro_out = self.get_predictions(candidates, self.cgyro_trainer.model)
-        deltas = torch.sum(torch.abs(((tglf_out ** 2) - (cgyro_out ** 2))), dim=1)
+        candidates_input, candidates_output = candidates
+        tglf_out = candidates_output  # Use ground truth as TGLF output
+        cgyro_out = self.get_predictions(candidates_input, self.cgyro_trainer.model)
+        deltas = torch.sum(torch.abs((tglf_out ** 2) - (cgyro_out ** 2)), dim=1)
 
-        # Standardize deltas -> z-scores
+        # If recompute_stats=True, compute new mean/std from deltas
+        if recompute_stats or mean is None or std is None:
+            clip_percent = 0.01 # how much to clip off the ends 
+            lower = torch.quantile(deltas, clip_percent)
+            upper = torch.quantile(deltas, 1 - clip_percent)
+            deltas_clipped = torch.clamp(deltas, lower, upper)
+            mean = deltas_clipped.mean()
+            std = deltas_clipped.std(unbiased=False) + 1e-12  # prevent divide-by-zero
+            # Store in self for future reuse
+            self.mean = mean
+            self.std = std
+
+        # Standardize deltas using provided or computed mean/std
         z_scores = (deltas - mean) / (std + 1e-12)
+
         # Bucket by integer multiples of std
-        labels = torch.floor(torch.abs(z_scores))  # 0 = within 1 std, 1 = 1-2 std, etc.
+        labels = torch.floor(torch.abs(z_scores))  # 0 = within 1 std, 1 = 1–2 std, etc.
         labels = torch.clamp(labels, min=0, max=num_classes - 1)
         labels = labels.view(-1, 1).long()
 
         # Count per class
         label_counts = torch.bincount(labels.view(-1), minlength=num_classes)
         print("Samples per class:", label_counts.tolist())
+        if recompute_stats:
+            print(f"New Mean: {mean.item():.4e}, New Std: {std.item():.4e}")
 
-        return labels
+        return labels, mean, std
+
     
-    def annotate(self, candidates, classify_func, num_classes):
+    def annotate(self, candidates, classify_func, num_classes, recompute_stats=False):
         """
-        Annotates candidates inputs with labels based on some specificed classification function.
-        This allows for easier experimentation with different classification functions, and hides
-        the grossness of the low-level input-label pairing in the rest of the pipeline.
+        Annotates candidate inputs with labels based on a specified classification function.
 
         Args:
-            candidates (Tensor): Input candidate tensor
-            classify_func (Function): Function that takes as arguments (candidates, **kwargs) and returns labels (e.g. log_ratio above)
-            (Optional) kwargs: Keyword arguments to pass to classify_func
+            candidates (Tensor or tuple): Input candidate tensor or tuple of (inputs, outputs)
+            classify_func (Function): Function returning (labels, mean, std)
+            num_classes (int): Number of classes for classification
+            recompute_stats (bool): Whether to recompute mean/std this time
 
         Returns:
-            labels (Tensor): labels associated with candidates, annotated using the classify_func
+            labels (Tensor): Labels for candidates
         """
-        labels = classify_func(candidates, num_classes, 0.3, 0.1)
+        mean = getattr(self, "mean", 0.0)
+        std = getattr(self, "std", 0.1)
+
+        labels, mean, std = classify_func(
+            candidates,
+            num_classes,
+            mean=mean,
+            std=std,
+            recompute_stats=recompute_stats
+        )
+
+        # Update stored stats
+        self.mean = mean
+        self.std = std
+
         return labels
     
     def vreduce_loss(self, train_data, pivot_idx, class_idx):
@@ -89,7 +125,7 @@ class DIRECT():
         upper_loss = (train_labels[pivot_idx:] == class_idx).sum() # everything rihgt of pivot should not be class_idx
         return lower_loss + upper_loss
 
-    def vreduce(self, sorted_inputs, sorted_labels, candidate_mask, budget, class_idx, B_parallel, num_classes, classify_func):
+    def vreduce(self, sorted_inputs, sorted_labels, candidate_mask, budget, class_idx, B_parallel, num_classes, classify_func, sorted_outputs=None):
         
         N_total = sorted_inputs.shape[0]
         print(f'Label shape: {sorted_labels.shape}')
@@ -146,7 +182,11 @@ class DIRECT():
             ]
 
             samples = sorted_inputs[sampled_idxs]
-            labels = self.annotate(samples, classify_func, num_classes)
+            if sorted_outputs is not None:
+                sample_outputs = sorted_outputs[sampled_idxs]
+                labels = self.annotate((samples, sample_outputs), classify_func, num_classes)
+            else:
+                labels = self.annotate(samples, classify_func, num_classes)
             if labels.ndim == 1:
                 labels = labels.unsqueeze(1)
 
@@ -172,22 +212,39 @@ class DIRECT():
         return sorted_inputs, sorted_labels, candidate_mask
 
     def estimate_optimal_separation_threshold(self, class_idx, labels, inputs):
+        """
+        Finds the index where the threshold best separates class_idx from others,
+        accounting for skewed class distributions by using weighted imbalance.
+        """
         N = labels.shape[0]
         assert N == inputs.shape[0]
+
         max_j = 0
-        max_imbalance = 0
+        max_imbalance = -1  # start from -1 to handle rare classes
+
+        # Precompute a mask for the target class
+        class_mask = (labels.squeeze() == class_idx).int()
+
+        # Compute cumulative sum for left side
+        cumsum_left = torch.cumsum(class_mask, dim=0)
+        total_class = class_mask.sum().item()
+
+        # Iterate over possible thresholds
         for j in range(N):
-            left = labels[:j]
-            right = labels[j:]
-            left_sum = torch.sum(left == class_idx)
-            right_sum = torch.sum(right != class_idx)
-            imbalance = left_sum + right_sum
+            left_count = cumsum_left[j]              # # of class_idx in left side
+            right_count = total_class - left_count   # # of class_idx in right side
+
+            # Weighted imbalance: favor thresholds that split class occurrences
+            imbalance = min(left_count, right_count)
+
             if imbalance > max_imbalance:
                 max_imbalance = imbalance
                 max_j = j
+
         return max_j
+
     
-    def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes):
+    def threshold_select(self, sorted_inputs, sorted_labels, candidate_mask, original_candidate_mask, budget_per_class, class_idx, classify_func, num_classes, sorted_outputs=None):
 
         N_total = sorted_inputs.shape[0]
 
@@ -257,7 +314,11 @@ class DIRECT():
 
         # Annotate selected inputs
         samples = sorted_inputs[sampled_idxs]
-        labels = self.annotate(samples, classify_func, num_classes)
+        if sorted_outputs is not None:
+            sample_outputs = sorted_outputs[sampled_idxs]
+            labels = self.annotate((samples, sample_outputs), classify_func, num_classes)
+        else:
+            labels = self.annotate(samples, classify_func, num_classes)
         if labels.ndim == 1:
             labels = labels.unsqueeze(1)
 
@@ -267,17 +328,19 @@ class DIRECT():
 
         return sorted_inputs, sorted_labels, candidate_mask
     
-    def direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
+    def direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs=None):
         """
         Expected train_data shape: (N_ky_samples, 32)
-        Expected candidate shape: (N_candidates, 32)
+        Expected candidates shape: tuple of (candidates_inputs, candidates_outputs)
+        Expected train_outputs: ground truth outputs for training data (optional)
         """
         train_inputs, train_labels = train_data
 
         N_train = train_inputs.shape[0]
-        N_candidates = candidates.shape[0]
+        candidates_inputs, candidates_outputs = candidates
+        N_candidates = candidates_inputs.shape[0]
 
-        all_inputs = torch.concatenate([train_inputs, candidates], dim=0)
+        all_inputs = torch.concatenate([train_inputs, candidates_inputs], dim=0)
         # Concat labels s.t. all candidates have their labels initialized to -1, as they are currently unlabeled
         all_labels = torch.concatenate([train_labels, torch.full(size=(N_candidates, 1), fill_value= -1)], dim=0)
         print(f'All inputs shape: {all_inputs.shape}')
@@ -290,7 +353,16 @@ class DIRECT():
         
         # NO ASINH SINCE SO SMALL DIFF
         cgyro_all_predictions = self.get_predictions(all_inputs, self.cgyro_trainer.model)
-        tglf_all_predictions = self.get_predictions(all_inputs, self.tglf_trainer.model)
+        
+        # For TGLF-SiNN data, use ground truth outputs for both training and candidates
+        if train_outputs is not None:
+            # Use provided ground truth outputs for training data
+            all_outputs = torch.concatenate([train_outputs, candidates_outputs], dim=0)
+        else:
+            # Fallback to TGLF model predictions for training data
+            train_outputs_pred = self.get_predictions(train_inputs, self.tglf_model)
+            all_outputs = torch.concatenate([train_outputs_pred, candidates_outputs], dim=0)
+        tglf_all_predictions = all_outputs
         
         # Expected predictions shape: (N_ky_samples, 4)
         pred_mse = torch.sum(torch.abs((cgyro_all_predictions ** 2) - (tglf_all_predictions ** 2)), dim=1) # expected shape: (N_ky_samples)
@@ -299,10 +371,12 @@ class DIRECT():
         sorted_idxs = pred_mse.argsort()
         sorted_inputs = all_inputs[sorted_idxs, :]
         sorted_labels = all_labels[sorted_idxs, :]
+        sorted_outputs = all_outputs[sorted_idxs, :]  # Sort outputs to match inputs
         # create masks
         candidate_mask = is_candidate[sorted_idxs] # (N_train + N_candidates,) boolean values
         original_candidate_mask = candidate_mask.clone()
         
+        start = time.time()
         # Spend half of budget on using VReduce to sample inputs near the optimal separation threshold
         budget = B_train / (2 * num_classes)
         if budget > 0:
@@ -315,8 +389,11 @@ class DIRECT():
                     k, 
                     B_parallel, 
                     num_classes, 
-                    classify_func
+                    classify_func,
+                    sorted_outputs
                 )
+        end = time.time()
+        print("Time for Vreduce: ", str(end - start)) 
         # Spend the rest of the budget on estimating optimal separation threshold and annotating near it
         new_inputs = sorted_inputs[~candidate_mask]
         new_labels = sorted_labels[~candidate_mask]
@@ -330,6 +407,7 @@ class DIRECT():
         remaining = max(0, int(B_train) - int(num_acquired_by_vreduce))
         budget_per_class = remaining // num_classes
         # Call threshold_select for each class (it updates sorted_inputs/labels/mask in place)
+        start = time.time()
         if budget_per_class > 0:
             for k in range(num_classes):
                 sorted_inputs, sorted_labels, candidate_mask = self.threshold_select(
@@ -341,8 +419,10 @@ class DIRECT():
                     k,
                     classify_func,
                     num_classes,
+                    sorted_outputs
                 )
-
+        end = time.time()
+        print("Time for Threshold: ", str(end - start)) 
         # Build final picked mask: those indices that were originally candidates and now are not candidates
         picked_mask = (~candidate_mask) & original_candidate_mask
         print(f"Total selected {picked_mask.sum().item()}")
@@ -350,6 +430,90 @@ class DIRECT():
         print(picked_inputs.shape)
         # Ensure returning a tensor 
         return picked_inputs
+
+    def gaussian_sampling(self, train_inputs, candidates, num_classes, B_train, train_outputs=None,
+        num_rounds=5, uniqueness_tol=1e-8,):
+        """
+        Gaussian sampling acquisition function
+        Args:
+            train_inputs: training inputs (used only for reference / normalization)
+            candidates: candidate pool for selection
+            num_classes: total number of classes
+            B_train: total acquisition budget
+            train_outputs: optional ground truth for training data
+            num_rounds: number of stochastic predictions
+            uniqueness_tol: tolerance for uniqueness check
+        """
+
+        N_candidates = candidates.shape[0]
+        residuals_all = []
+
+        # Compute residual distributions over multiple stochastic rounds
+        for r in range(num_rounds):
+            cgyro_preds = self.get_predictions(candidates, self.cgyro_trainer.model)
+            tglf_preds = self.get_predictions(candidates, self.tglf_model)
+            residuals = torch.sum(torch.abs((tglf_preds ** 2) - (cgyro_preds ** 2)), dim=1)
+            residuals_all.append(residuals.unsqueeze(1))
+
+        residuals_all = torch.cat(residuals_all, dim=1)  # [N_candidates, num_rounds]
+        print("Get Preds Done")
+
+        # Compute residual statistics
+        residual_mean = residuals_all.mean(dim=1)
+        residual_std = residuals_all.std(dim=1) + 1e-12  # avoid divide-by-zero
+
+        # Standardize using stored normalization constants
+        z_scores = (residual_mean - getattr(self, "mean", 0.0)) / (getattr(self, "std", 0.1) + 1e-12)
+
+        # Sort by absolute z-score (threshold proximity)
+        sorted_vals, sorted_idx = torch.sort(torch.abs(z_scores))
+        sorted_inputs = candidates[sorted_idx]
+        sorted_z_scores = z_scores[sorted_idx]
+        sorted_mean = residual_mean[sorted_idx]
+        sorted_std = residual_std[sorted_idx]
+
+        picked_indices = []
+        budget_per_class = B_train // num_classes
+        seen_hashes = set()
+
+        # Select points per class around midpoint thresholds
+        for k in range(num_classes):
+            threshold = k + 0.5  # midpoint of class bucket
+
+            # Higher score for samples closer to threshold and more uncertain
+            distances = torch.abs(torch.abs(sorted_z_scores) - threshold)
+            scores = sorted_std / (distances + 1e-12)
+
+            # Sort candidate scores (descending)
+            sorted_score_idx = torch.argsort(scores, descending=True)
+
+            num_picked_this_class = 0
+            for idx in sorted_score_idx.tolist():
+                h = self.make_hash(sorted_inputs[idx])
+                if h not in seen_hashes:
+                    picked_indices.append(sorted_idx[idx].item())
+                    seen_hashes.add(h)
+                    num_picked_this_class += 1
+
+                if num_picked_this_class >= budget_per_class or len(picked_indices) >= B_train:
+                    break
+
+            print(f"Class {k}: picked {num_picked_this_class} unique out of {budget_per_class}")
+
+            if len(picked_indices) >= B_train:
+                break
+
+        picked_indices = torch.tensor(picked_indices, dtype=torch.long)
+        picked_inputs = candidates[picked_indices]
+
+        print(f"Total selected: {picked_inputs.shape[0]} / Budget: {B_train}")
+        return picked_inputs
+
+
+    def make_hash(self, input_tensor):
+        # Use first 31 dims rounded to uniqueness tolerance
+        arr = input_tensor[:31].detach().cpu().numpy().astype(np.float32)
+        return hashlib.sha1(arr.tobytes()).hexdigest()
     
     def compute_num_classes(self, candidates, classify_func, num_classes):
         labels = classify_func(candidates, num_classes)
@@ -371,6 +535,9 @@ if __name__ == "__main__":
     train_data = torch.rand(size=(N_train_samples, 32))
     train_labels = torch.floor(torch.rand(size=(N_train_samples, 1)) * num_classes).int()
     train = train_data, train_labels
-    candidates = torch.rand(size=(N_candidates, 32))
-    bal = DIRECT()
-    bal.direct(train, candidates, None, None, num_classes, B_train, B_parallel, bal.log_mse)
+    candidates_inputs = torch.rand(size=(N_candidates, 32))
+    candidates_outputs = torch.rand(size=(N_candidates, 4))
+    candidates = (candidates_inputs, candidates_outputs)
+    train_outputs = torch.rand(size=(N_train_samples, 4))
+    bal = DIRECT(None, None)  # Mock trainers
+    bal.direct(train, candidates, num_classes, B_train, B_parallel, bal.log_mse, train_outputs)

@@ -32,7 +32,7 @@ def inspect_h5_files(h5_dir):
 
 def main():
     # 👇 Manually set the path here
-    h5_dir = "./test_data/train"  # ← CHANGE THIS LINE
+    h5_dir = "../../../data/lucas_work/tglf-sinn-data-subset/train"  # ← CHANGE THIS LINE
     inspect_h5_files(h5_dir)
 
 if __name__ == "__main__":

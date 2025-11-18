@@ -35,9 +35,9 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
             for key in spectra_function_keys:
                 spectra_list.append(np.array(f[key]))
             for key in intermediate_target_keys:
-                flux_spectrum = np.array(f[key])  # (size, nky, 2, nf, ns, 5)
+                flux_spectrum = np.array(f[key])    
 
-                assert flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
+                # assert flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
 
                 # Option 1: Select the first index at dim=2 (assuming it’s always the useful one)
                 flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (size, nky, nf, ns, 5)

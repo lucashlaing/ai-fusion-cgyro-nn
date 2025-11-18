@@ -4,10 +4,15 @@ import time
 import os
 import h5py
 import numpy as np
+import hashlib
 from dataset import Spectra_Regularization_DataPipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
+from pathlib import Path
+from bal.sample_data import generate_samples
+from bal.generate_ky_spectra import load_npy_or_npz, compute_ky_matrix_skip_bad
 from bal.DIRECT import DIRECT
+from utils import UsageTracker
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -27,68 +32,69 @@ class BAL():
             self.acq_func = self.random_sample
         elif run_cfg.bal.acquisition_function == 'eig_stratified':
             self.acq_func = self.eig_stratified_sample
-        # TODO: for Lucas to test
         elif run_cfg.bal.acquisition_function == 'direct':
             self.acq_func = self.direct_sample
+        elif run_cfg.bal.acquisition_function == 'gaussian':
+            self.acq_func = self.gaussian_sample
         else:
             print(f'Warning: undefined acquisition function given: {run_cfg.bal.acquisition_function}')
     
     def sample_candidates(self, n_samples, dist_json_path, buffer_ratio=0.05):
         """
-        Sample candidate inputs using bounded normal sampling.
+        Generate physics-consistent candidate samples using sample_data.py + generate_ky_spectra.py.
 
-        If self.has_spectra is True:
-            Return shape (n_samples, 24, 32) with 31 base features + 1 k_y.
-        Else:
-            Return shape (n_samples, 31).
+        Returns:
+            Tensor of shape (n_kept, 32) = 31 base features + 1 randomly selected ky value.
         """
+        out_dir = Path("generated_candidates")
+        out_dir.mkdir(exist_ok=True, parents=True)
 
-        # HARD CODED KY VALUES
-        KY_LOCS = [
-            0.06010753, 0.12021505, 0.18032258, 0.2404301, 0.30053763, 0.54096774,
-            0.66118279, 0.78139784, 0.90161289, 1.02182795, 1.142043, 1.26225805,
-            1.20215052, 1.5988144, 2.12677655, 2.82962789, 3.76547314, 5.01177679,
-            6.67183152, 8.88339377, 11.8302146, 15.75743919, 20.99217655, 27.97098031
-        ]
+        # --- Step 1: Read rho labels from JSON ---
+        with open(dist_json_path, "r") as f:
+            stats_by_rho = json.load(f)
+        rho_labels = sorted(stats_by_rho.keys(), key=lambda s: float(s))
+        n_rhos = len(rho_labels)
 
-        with open(dist_json_path, 'r') as f:
-            dist = json.load(f)
+        samples_per_rho = max(1, n_samples // n_rhos)
+        remainder = n_samples - samples_per_rho * (n_rhos - 1)
+        print(f"Distributing {n_samples} total samples across {n_rhos} rho values...")
 
-        var_names = sorted(dist.keys())
-        means = torch.tensor([dist[var]["mean"] for var in var_names])
-        stds = torch.tensor([dist[var]["std"] for var in var_names])
-        min_bounds = torch.tensor([dist[var]["min"] for var in var_names])
-        max_bounds = torch.tensor([dist[var]["max"] for var in var_names])
+        grad_r0 = getattr(self.cfg, "grad_r0", 1.23314445670738)
+        seed = getattr(self.cfg, "seed", 42)
+        rng = np.random.default_rng(seed)
 
-        range_bounds = max_bounds - min_bounds
-        min_bounds -= buffer_ratio * range_bounds
-        max_bounds += buffer_ratio * range_bounds
+        # --- Step 2: Generate samples once for all rho ---
+        generate_samples(dist_json_path, str(out_dir), n=samples_per_rho, seed=seed)
 
-        # Rejection sampling
-        samples = []
-        attempts = 0
-        max_attempts = 10000 * n_samples
+        all_final = []
 
-        while len(samples) < n_samples and attempts < max_attempts:
-            sample = torch.normal(means, stds)
-            if torch.all(sample >= min_bounds) and torch.all(sample <= max_bounds):
-                samples.append(sample)
-            attempts += 1
+        # --- Step 3: Process each rho separately ---
+        for i, rho_label in enumerate(rho_labels):
+            npy_path = out_dir / f"samples_rho_{rho_label}.npy"
+            if not npy_path.exists():
+                raise FileNotFoundError(f"Missing {npy_path}")
 
-        if len(samples) < n_samples:
-            raise RuntimeError(f"Only sampled {len(samples)} after {attempts} attempts.")
+            data = load_npy_or_npz(str(npy_path))
+            ky_mat, inputs_kept, kept_idx, skipped_idx = compute_ky_matrix_skip_bad(data, grad_r0)
 
-        x_samples = torch.stack(samples)  # shape: (n_samples, 31)
+            print(f"[rho={rho_label}] kept {len(kept_idx)} / {data.shape[0]} valid samples")
 
-        if self.has_spectra:
-            # Add 24 k_y values as the 32nd feature
-            ky_tensor = torch.tensor(KY_LOCS, dtype=torch.float32)  # (24,)
-            ky_expanded = ky_tensor.unsqueeze(0).repeat(n_samples, 1)  # (n_samples, 24)
-            x_expanded = x_samples.unsqueeze(1).repeat(1, 24, 1)  # (n_samples, 24, 31)
-            final_input = torch.cat([x_expanded, ky_expanded.unsqueeze(-1)], dim=-1)  # (n_samples, 24, 32)
-            return final_input
-        else:
-            return x_samples  # (n_samples, 31)
+            # Randomly choose one ky per sample
+            n_kept, nky = ky_mat.shape
+            random_indices = rng.integers(0, nky, size=n_kept)
+            ky_vals = ky_mat[np.arange(n_kept), random_indices].reshape(-1, 1)
+
+            # Combine base inputs + one ky column
+            combined = np.hstack([inputs_kept, ky_vals])
+            all_final.append(combined)
+
+        # --- Step 4: Combine and convert to tensor ---
+        all_final = np.vstack(all_final)
+        x_samples = torch.tensor(all_final, dtype=torch.float32)
+
+        print(f"\n✅ Generated total {x_samples.shape[0]} samples of shape {x_samples.shape}")
+        return x_samples  # (n_kept, 32)
+
 
     def get_prediction(self, input, model):
             """
@@ -121,6 +127,11 @@ class BAL():
 
             return torch.stack(predictions_per_ky, dim=0)
     
+    def make_hash(self, input_tensor):
+        # Use first 31 dims rounded to uniqueness tolerance
+        arr = input_tensor[:31].detach().cpu().numpy().astype(np.float32)
+        return hashlib.sha1(arr.tobytes()).hexdigest()
+
     def ragged_collate(self, batch):
         """
         Collate function for DataLoader to handle variable nky per sample.
@@ -399,7 +410,7 @@ class BAL():
 
         return sorted_eig_values, sorted_indices
 
-    def model_difference(self, candidates, trainer, lowerTrainer, sort=False):
+    def model_difference(self, candidates, trainer, lowerModel, sort=False, ground_truths=None):
         """
         Sort candidates by the average predicted flux magnitude across 4 outputs.
 
@@ -413,15 +424,18 @@ class BAL():
         """
         all_predictions = self.get_prediction(candidates, trainer.model)
         # run candidates through lower model as well (NOT TOO OPTIMIZED)
-        lower_model_pred = self.get_prediction(candidates, lowerTrainer.model)
-
+        if ground_truths == None:
+            lower_model_pred = self.get_prediction(candidates, lowerModel)
+            other = lower_model_pred
+        else:
+            other = ground_truths
         all_predictions_normalized = torch.asinh(all_predictions)
-        lower_model_pred_normalized = torch.asinh(lower_model_pred)
+        # lower_model_pred_normalized = torch.asinh(lower_model_pred)
 
-        print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
-        print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
+        # print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
+        # print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
         # makes our predictions to be for the difference
-        diffs = all_predictions_normalized - lower_model_pred_normalized # (model_count, n*ky, 4)
+        diffs = all_predictions_normalized - other # (model_count, n*ky, 4)
         print(f'Diffs have NaN: {torch.isnan(diffs).any()}')
         mean_flux = torch.mean(diffs, dim=0)  # (n*ky, 4)
         print(f'Mean Diffs 1 have NaN: {torch.isnan(mean_flux).any()}')
@@ -434,18 +448,32 @@ class BAL():
         else:
             return mean_flux, torch.arange(0, mean_flux.shape[0])
     
-    def propose_samples(self, trainer, lowerTrainer):
-        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+    def propose_samples(self, trainer, lowerModel):
+        train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        start = time.time()
+        candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)  # shape: (n_candidates, n_features) or tuple for Offline
         print("Candidates found")
+        end = time.time()
+        print("Time to find candidates: ", str(end - start))
+        # Minimal debug: print candidate type and primary shape (1-2 lines)
+        try:
+            print("candidates shape:", candidates.shape)
+        except Exception:
+            # fallback for tuple/list-like candidates
+            try:
+                print("candidates[0] shape:", candidates[0].shape)
+            except Exception:
+                print("candidates type:", type(candidates))
 
-        proposed_samples = self.acq_func(candidates, trainer, lowerTrainer)
+        proposed_samples = self.acq_func(candidates, trainer, lowerModel)
         print("Proposed samples")
         return proposed_samples
     
-    def eig_sample(self, candidates, trainer, lowerTrainer):
+    def eig_sample(self, candidates_tuple, trainer, lowerModel):
         # Each returns (scores, indices) where indices are into `candidates`
         # model_diff_scores, model_diff_indices = self.model_difference(candidates, trainer)
         # print("model difference Done")
+        candidates, outputs = candidates_tuple
         eig_scores, eig_indices = self.eig(candidates, trainer)
         print("EIG Done")
         # Make sure both scores are aligned with the *original* candidates
@@ -463,41 +491,76 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self, candidates, trainer, lowerTrainer):
-        # candidates shape: (n_candidates, n_features)
-        random_idxs = torch.randperm(candidates.shape[0])
-        print("Random candidates found")
-        return candidates[random_idxs[:self.cfg.new_sample_size]]
-    
-    def get_initial_dataset(self, poolSize):
-        candidates = self.sample_candidates(poolSize, self.cfg.dist_json_path)  # shape: (n_candidates, n_features)
+    def random_sample(self, candidates, trainer, lowerModel):
+        # candidates, output = candidates_tuple
+        # candidates shape: (sum_ky, 32) - all ky slices from all sampled physical locations
+        
+        # Deduplicate by physical parameters (first 31 dims)
+        unique_samples = []
+        seen_hashes = set()
+        
+        for i in range(candidates.shape[0]):
+            candidate = candidates[i]
+            key = self.make_hash(candidate)
+            
+            # Skip if we've already seen this physical location
+            if key in seen_hashes:
+                continue
+            
+            unique_samples.append(candidate)
+            seen_hashes.add(key)
+        
+        # Now randomly sample from all unique candidates
+        if len(unique_samples) < self.cfg.new_sample_size:
+            print(f"Warning: Only found {len(unique_samples)} unique samples (requested {self.cfg.new_sample_size})")
+            num_to_sample = len(unique_samples)
+        else:
+            num_to_sample = self.cfg.new_sample_size
+        
+        unique_samples_tensor = torch.stack(unique_samples)
+        random_idxs = torch.randperm(unique_samples_tensor.shape[0])
+        
+        print(f"Random candidates found: {num_to_sample} samples from {len(unique_samples)} unique")
+        return unique_samples_tensor[random_idxs[:num_to_sample]]
 
-        random_idxs = torch.randperm(candidates.shape[0])
-        print("Random candidates found")
-        return candidates[random_idxs[:self.cfg.initial_training_size]]
-    
-    def eig_stratified_sample(self, candidates, trainer, lowerTrainer, num_strata=10, strata_weights=[0.4, 0.3, 0.2, 0.1]):
+    def get_initial_dataset(self, init_training_size):
+        train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        candidates_tuple = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)
+        
+            # Use random_sample with temporarily modified config
+        original_size = self.cfg.new_sample_size
+        self.cfg.new_sample_size = self.cfg.initial_training_size
+        result = self.random_sample(candidates_tuple, None, None)
+        self.cfg.new_sample_size = original_size
+        
+        return result
+
+    def eig_stratified_sample(self, candidates, trainer, lowerModel, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
+        candidates, outputs = candidates
         eig_scores, eig_indices = self.eig(candidates, trainer)
+        combined_scores = torch.zeros(len(candidates))
+        combined_scores[eig_indices] += eig_scores
+
         print("EIG Done")
-        diffs, diff_indices = self.model_difference(candidates, trainer, lowerTrainer, sort=True)
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerModel, sort=True, ground_truths=outputs)
         print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
         print(f'Residual Std: {torch.std(diffs, dim=0)}')
         print(f'Diffs Shape: {diffs.shape}')
         sorted_candidates = candidates[diff_indices]
-        sorted_eig_scores = eig_scores[diff_indices]
+        sorted_eig_scores = combined_scores[diff_indices]
 
-        strata_eig_sums = []
+        strata_eig_sums = torch.zeros(size=(num_strata, 1))
         strata_size = int(np.floor(candidates.shape[0] / num_strata))
 
         for i in range(num_strata):
-            strata_eig_sums.append(torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0))
-        
-        strata_eig_sums = torch.tensor(strata_eig_sums)
-        
+            strata_eig_sums[i] =torch.sum(sorted_eig_scores[i*strata_size : (i+1)*strata_size], dim=0)
+      
         sorted_strata_idxs = torch.argsort(strata_eig_sums, descending=True)
 
         proposed_samples = torch.zeros_like(candidates[0,:].unsqueeze(0))
         total_samples_collected = 0
+
+        sample_tracker = UsageTracker()
         for i in range(len(strata_weights)):
             strata_index = sorted_strata_idxs[i]
             print(f'Strata Index: {strata_index}')
@@ -509,16 +572,31 @@ class BAL():
             total_samples_collected += num_strata_samples
                 
             strata_eig_idxs = torch.argsort(sorted_eig_scores[strata_index*strata_size : (strata_index+1)*strata_size], dim=0)
-            strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+            # Take highest-EIG samples in strata, only completing once budget has been saturated
+            strata_samples = torch.zeros(size=(num_strata_samples, candidates.shape[1]))
+            num_unique_samples = 0
+            for i in range(strata_eig_idxs.shape[0]):
+                sample = sorted_candidates[strata_eig_idxs[i]]
+                # Only add non-duplicate samples
+                if num_unique_samples == num_strata_samples:
+                    break
+                if not sample_tracker.is_used(sample):
+                    sample_tracker.mark_used(sample)
+                    strata_samples[num_unique_samples] = sample
+                    num_unique_samples += 1
+            
+            # strata_samples = sorted_candidates[strata_eig_idxs[:num_strata_samples]]
+
+            # Add strata samples to proposed samples
             proposed_samples = torch.concat([proposed_samples, strata_samples], dim=0)
-            print(f'Strata Samples {i}: {strata_samples.shape[0]}')
+
         print(f'EIG Strat Proposed Samples have NaN: {torch.isnan(proposed_samples).any()}')
+        print(f'Proposed Samples Shape: {proposed_samples[1:].shape}')
         return proposed_samples[1:] #remove first element, as it is a zero tensor
     
-    #TODO: Implement based on Lucas changes to DIRECT
-    def direct_sample(self, candidates, trainer, lowerTrainer):
+    def direct_sample(self, candidates, trainer, lowerModel):
         
-        directWrapper = DIRECT(lowerTrainer, trainer)
+        directWrapper = DIRECT(lowerModel, trainer)
 
         num_classes = 5
         classify_func = directWrapper.log_mse
@@ -526,19 +604,54 @@ class BAL():
         # getting the train data
         # train_inputs = list(self.dataset)
         train_inputs = torch.cat([x[0] for x in self.dataset], dim=0)
+        train_outputs = torch.cat([x[1] for x in self.dataset], dim=0)
         print(f"train inputs are {train_inputs.shape}")
-        train_labels = directWrapper.annotate(train_inputs, classify_func, num_classes)
+        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes, True)
 
         train_data = (train_inputs, train_labels)
         print(f"inputs are {train_data[0].shape} and labels are {train_data[1].shape}")
 
-        print(f"candidates shape is {candidates.shape}")
+        print(f"candidates shape is {candidates[0].shape}")
         print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
-        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func):
-        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func)
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs):
+        # candidates is already a tuple of (inputs, outputs) from Offline.sample_candidates
+        # Pass ground truth training outputs for TGLF-SiNN data
+        newCandidates = directWrapper.direct(train_data, candidates, num_classes, self.cfg.new_sample_size, 1, classify_func, train_outputs)
 
         return newCandidates
+
+    def gaussian_sample(self, candidates, trainer, lowerModel):
         
+        directWrapper = DIRECT(lowerModel, trainer)
+        classify_func = directWrapper.log_mse
+        num_classes = 5
+
+        # getting the train data
+        # train_inputs = list(self.dataset)
+        inputs_list = []
+        outputs_list = []
+
+        # Loop just one time
+        for x_input, y_output in self.dataset:
+            inputs_list.append(x_input)
+            outputs_list.append(y_output)
+
+        # Concatenate after the single loop
+        train_inputs = torch.cat(inputs_list, dim=0)
+        train_outputs = torch.cat(outputs_list, dim=0)
+
+        # to get mean and std saved in direct for use later
+        train_labels = directWrapper.annotate((train_inputs, train_outputs), classify_func, num_classes, True)
+
+        print(f"train inputs are {train_inputs.shape}")
+        print(f"candidates shape is {candidates.shape}")
+        print(f"self.cfg.new_sample_size is: {self.cfg.new_sample_size}")
+        # direct(self, train_data, candidates, num_classes, B_train, B_parallel, classify_func, train_outputs):
+        # candidates is already a tuple of (inputs, outputs) from Offline.sample_candidates
+        # Pass ground truth training outputs for TGLF-SiNN data
+        newCandidates = directWrapper.gaussian_sampling(train_inputs, candidates, num_classes, self.cfg.new_sample_size, train_outputs)
+
+        return newCandidates
 
     def save_top_k_candidates(self, candidates, save_path=None, filename="top_k_candidates.npy"):
         """

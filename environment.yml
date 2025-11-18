@@ -1,8 +1,23 @@
-name: example
+name: ai-fusion-cgyro-nn
 channels:
   - conda-forge
   - nvidia
+  - pytorch
 dependencies:
   - python=3.11.*
   - pip
   - poetry=1.*
+  - pytorch=2.*
+  - torchvision
+  - numpy
+  - wandb
+  - tabulate
+  - omegaconf
+  - cudatoolkit  # for GPU support
+  - matplotlib   # commonly needed for plotting
+  - h5py        # used extensively for data handling
+  - pyyaml      # for yaml config files
+  - tqdm        # used in training loops
+  - hydra-core  # found in bal_finetune.py and train.py
+  - pytz        # used for timezone handling
+  - pytest      # for running tests in test directory
