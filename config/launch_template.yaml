@@ -1,0 +1,9 @@
+project_name: ai-fusion-cgyro-nn
+model:
+  tglf-online-bal: 
+    command: >-
+      [](mkdir ../normal_dataset/; make download file=<train_path>/../; cp -p <train_path>/../ ../normal_dataset/train; make download file=<test_path>; cp -p <test_path> ../normal_dataset/test/;) conda activate ai-fusion-cgyro-nn; python src/train.py -h5 <candidates_h5_path> -tglf <candidates_tglf_path> -ckpt <last_model_checkpoint_path> -newckpt <new_model_checkpoint_path>; make upload file=<candidates_h5_path>; make upload file=<candidates_tglf_path>; 
+    gpu_count: 2
+    memory: 64
+    cpu_count: 4
+    ephemeral_storage: 200

@@ -4,6 +4,7 @@ import hydra
 import wandb
 import pytz
 import shutil
+import argparse
 from datetime import datetime
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
@@ -102,7 +103,7 @@ def run_train(cfg):
         model = MODEL_HANDLER[project_name](cfg.model)
 
     # Check for a checkpoint path passed from the BAL loop
-    load_path = getattr(cfg, "load_main_checkpoint_path", None)
+    load_path = cfg.checkpoint_path # getattr(cfg, "load_main_checkpoint_path", None)
     if load_path and os.path.exists(load_path):
         print(f"Attempting to load main model weights from: {load_path}")
         try:
@@ -230,7 +231,7 @@ def run_train(cfg):
     # We assume cfg.dump_dir is set in your hydra config
     save_dir = os.path.join(cfg.dump_dir, "bal_checkpoints")
     os.makedirs(save_dir, exist_ok=True)
-    save_path = os.path.join(save_dir, "model_bal_latest.pth")
+    save_path = cfg.new_checkpoint_path # os.path.join(save_dir, "model_bal_latest.pth")
     
     print(f"Saving final model state_dict to {save_path}...")
     try:
@@ -279,7 +280,7 @@ def run_train(cfg):
     print(f"Computed ky for {ky_mat.shape[0]} valid samples (skipped {len(skipped_idx)})")
     print(f"ky_mat shape: {ky_mat.shape}")
 
-    out_path="generated_candidates/ky_spectra_new.h5"
+    out_path= cfg.h5_candidate_path # "generated_candidates/ky_spectra_new.h5"
     save_h5(
         out_path=out_path,
         inputs_mat=inputs_kept,
@@ -293,7 +294,7 @@ def run_train(cfg):
     dest_dir = "./generated_tglf_inputs/"
     convert_h5_to_batch_dir_parallel(out_path, dest_dir)
 
-    outside_dir = "../reformatted_tglf_inputs/"
+    outside_dir = cfg.tglf_candidate_path # "../reformatted_tglf_inputs/"
     process_tglf_batches(dest_dir, outside_dir)
 
     # --- cleanup section ---
@@ -334,4 +335,15 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    # parser.add_argument("-h5", "--candidates_h5_path")
+    # parser.add_argument("-tglf", "--candidates_tglf_path")
+    # parser.add_argument("-ckpt", "--last_model_checkpoint_path")
+    # parser.add_argument("-newckpt", "--new_model_checkpoint_path")
+
+    # args = parser.parse_args()
+    # h5_candidate_path = args.candidates_h5_path
+    # tglf_candidate_path = args.candidates_tglf_path
+    # last_ckpt = args.last_model_checkpoint_path
+    # new_ckpt = args.new_model_checkpoint_path
     main()
