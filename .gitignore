@@ -10,3 +10,4 @@ test_data/
 node_modules/
 *.pth
 generated_tglf_inputs/
+.ssh/
