@@ -374,6 +374,7 @@ class BAL():
         
         # 1. calcuate prior entropy
         start_time = time.time()
+        print(candidates.shape)
         # Get the predictions and calculate variance
         all_predictions_per_ky = self.get_prediction(candidates, trainer.model)
         print("The shape of all_pred_per_ky is ", all_predictions_per_ky.shape)
@@ -431,7 +432,7 @@ class BAL():
             other = ground_truths
         all_predictions_normalized = torch.asinh(all_predictions)
         # lower_model_pred_normalized = torch.asinh(lower_model_pred)
-
+        other = torch.asinh(other)
         # print(f'Finetune model predicted NaN: {torch.isnan(all_predictions_normalized).any()}')
         # print(f'Frozen model predicted NaN: {torch.isnan(lower_model_pred_normalized).any()}')
         # makes our predictions to be for the difference
@@ -491,8 +492,8 @@ class BAL():
         print("Top k candidates found")
         return topk_candidates
     
-    def random_sample(self, candidates, trainer, lowerModel):
-        # candidates, output = candidates_tuple
+    def random_sample(self, candidates_tuple, trainer, lowerModel):
+        candidates, output = candidates_tuple
         # candidates shape: (sum_ky, 32) - all ky slices from all sampled physical locations
         
         # Deduplicate by physical parameters (first 31 dims)
@@ -535,14 +536,14 @@ class BAL():
         
         return result
 
-    def eig_stratified_sample(self, candidates, trainer, lowerModel, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
-        candidates, outputs = candidates
+    def eig_stratified_sample(self, candidates_tuple, trainer, lowerModel, num_strata=5, strata_weights=[0.7, 0.2, 0.1]):
+        candidates, outputs = candidates_tuple
         eig_scores, eig_indices = self.eig(candidates, trainer)
         combined_scores = torch.zeros(len(candidates))
         combined_scores[eig_indices] += eig_scores
 
         print("EIG Done")
-        diffs, diff_indices = self.model_difference(candidates, trainer, lowerModel, sort=True, ground_truths=outputs)
+        diffs, diff_indices = self.model_difference(candidates, trainer, lowerModel, sort=True, ground_truths = outputs)
         print(f'Residual Mean: {torch.mean(diffs, dim=0)}')
         print(f'Residual Std: {torch.std(diffs, dim=0)}')
         print(f'Diffs Shape: {diffs.shape}')
