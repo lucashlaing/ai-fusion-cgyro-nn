@@ -32,7 +32,7 @@ def run_train(cfg):
     if cfg.board:
         wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
         wandb.init(
-            project=f"{cfg.project}-train-fixed-op",
+            project=f"{cfg.project}-eval",
             config=OmegaConf.to_container(cfg, resolve=True),
         )
         with open_dict(cfg):
@@ -43,14 +43,9 @@ def run_train(cfg):
     # Model and dataset creation
     project_name = cfg.project
     checkpoint_path = cfg.checkpoint_path
-    if(project_name == "CGYRO"):
-        lowerModel = MODEL_HANDLER["SR"](cfg.model)
-        load_prev_model(lowerModel, checkpoint_path)
-        print("Lower Fidelity Model Loaded Successful")
-        model = MODEL_HANDLER[project_name](cfg.model, lowerModel)
-    else:
-        model = MODEL_HANDLER[project_name](cfg.model)
-        load_prev_model(model, checkpoint_path)
+    print(f"Loading model for project: {cfg.project}")
+    model = MODEL_HANDLER["SR"](cfg.model)
+    load_prev_model(model, cfg.checkpoint_path)
     
     train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
@@ -62,12 +57,14 @@ def run_train(cfg):
         batch_size=cfg.batch,
         num_workers=cfg.dataset_workers,
         pin_memory=True,
+        collate_fn=ragged_collate,
     )
     test_loader = DataLoader(
         test_datapipe,
-        batch_size=10000,
+        batch_size=cfg.batch,
         num_workers=cfg.dataset_workers,
         pin_memory=True,
+        collate_fn=ragged_collate,
     )
 
     time_stamp = datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S")
@@ -76,15 +73,15 @@ def run_train(cfg):
     train_loopers = InfiniteDataLooper(train_loader)
     test_loopers = InfiniteDataLooper(test_loader)
 
-    print("Accumulating channel mean and std for model...")
-    for _ in tqdm(range(cfg.accumulation_steps)):
-        data = next(train_loopers)
-        trainer.accumulate(data)
-    print("Accumulation done. The stats are:")
-    if hasattr(trainer.model, "module"):
-        trainer.model.module.report_stats()
-    else:
-        trainer.model.report_stats()
+    # print("Accumulating channel mean and std for model...")
+    # for _ in tqdm(range(cfg.accumulation_steps)):
+    #     data = next(train_loopers)
+    #     trainer.accumulate(data)
+    # print("Accumulation done. The stats are:")
+    # if hasattr(trainer.model, "module"):
+    #     trainer.model.module.report_stats()
+    # else:
+    #     trainer.model.report_stats()
 
     total_steps = cfg.epochs * cfg.steps_per_epoch
 
@@ -96,7 +93,14 @@ def run_train(cfg):
     print("Training starts...")
     for _ in tqdm(range(total_steps + 1)):
         train_data = next(train_loopers)
+        device = next(trainer.model.parameters()).device
 
+        # 2. Move the data (inputs and targets) to that device
+        # train_data is a tuple (inputs, targets) from ragged_collate
+        if isinstance(train_data, (list, tuple)):
+            train_data = [t.to(device) for t in train_data]
+        else:
+            train_data = [train_data.to(device)]
         # === DEBUG CHECK 1: Data ===
         if isinstance(train_data, (list, tuple)):
             tensors_to_check = train_data
@@ -167,7 +171,28 @@ def run_train(cfg):
     if cfg.board:
         wandb.finish()
 
+def ragged_collate(batch):
+    """
+    Collate function for DataLoader to handle variable nky per sample.
+    
+    batch: list of tuples [(input_0, target_0), (input_1, target_1), ...]
+        input_i: (nky_i, input_dim)
+        target_i: (nky_i, 4)
+    
+    Returns:
+        inputs_cat: torch.Tensor of shape (sum_nky, input_dim)
+        targets_cat: torch.Tensor of shape (sum_nky, 4)
+    """
+    # Extract inputs and targets from batch
+    inputs = [item[0] for item in batch]    # list of tensors (nky_i, input_dim)
+    targets = [item[1] for item in batch]   # list of tensors (nky_i, 4)
 
+    # Concatenate along the first dimension (ky dimension)
+    # This creates a single tensor with all ky points across the batch
+    inputs_cat = torch.cat(inputs, dim=0)   # shape: (sum_nky, input_dim)
+    targets_cat = torch.cat(targets, dim=0) # shape: (sum_nky, 4)
+
+    return inputs_cat, targets_cat
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):

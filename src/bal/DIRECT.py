@@ -431,7 +431,7 @@ class DIRECT():
         # Ensure returning a tensor 
         return picked_inputs
 
-    def gaussian_sampling(self, train_inputs, candidates, num_classes, B_train, train_outputs=None,
+    def gaussian_sampling(self, train_inputs, candidates_tuple, num_classes, B_train, train_outputs=None,
         num_rounds=5, uniqueness_tol=1e-8,):
         """
         Gaussian sampling acquisition function
@@ -444,15 +444,15 @@ class DIRECT():
             num_rounds: number of stochastic predictions
             uniqueness_tol: tolerance for uniqueness check
         """
-
+        candidates, output = candidates_tuple
         N_candidates = candidates.shape[0]
         residuals_all = []
 
         # Compute residual distributions over multiple stochastic rounds
         for r in range(num_rounds):
             cgyro_preds = self.get_predictions(candidates, self.cgyro_trainer.model)
-            tglf_preds = self.get_predictions(candidates, self.tglf_model)
-            residuals = torch.sum(torch.abs((tglf_preds ** 2) - (cgyro_preds ** 2)), dim=1)
+            # tglf_preds = self.get_predictions(candidates, self.tglf_model)
+            residuals = torch.sum(torch.abs((output ** 2) - (cgyro_preds ** 2)), dim=1)
             residuals_all.append(residuals.unsqueeze(1))
 
         residuals_all = torch.cat(residuals_all, dim=1)  # [N_candidates, num_rounds]
