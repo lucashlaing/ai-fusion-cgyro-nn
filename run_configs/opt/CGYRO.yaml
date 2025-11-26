@@ -1,5 +1,5 @@
-peak_lr: 5e-4                  # lower to be safe on small data
-end_lr: 1e-5
+peak_lr: 1e-5                  # lower to be safe on small data
+end_lr: 5e-7
 warmup_steps: 0                # no warmup needed
 decay_steps: 2000                # total steps = 2 * 20 = 40
 gnorm_clip: 1.0

@@ -73,16 +73,6 @@ def run_train(cfg):
     train_loopers = InfiniteDataLooper(train_loader)
     test_loopers = InfiniteDataLooper(test_loader)
 
-    # print("Accumulating channel mean and std for model...")
-    # for _ in tqdm(range(cfg.accumulation_steps)):
-    #     data = next(train_loopers)
-    #     trainer.accumulate(data)
-    # print("Accumulation done. The stats are:")
-    # if hasattr(trainer.model, "module"):
-    #     trainer.model.module.report_stats()
-    # else:
-    #     trainer.model.report_stats()
-
     total_steps = cfg.epochs * cfg.steps_per_epoch
 
     ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"

@@ -1,8 +1,8 @@
 epoch_per_training: 100
 initial_training_size: 20000
 acquisition_function: random # in [random, eig, direct, eig_stratified, gaussian]
-n_samples: 100000
-new_sample_size: 1000
+n_samples: 200000
+new_sample_size: 10000
 entropy_training_steps: 100
 model_count: 16
 dist_json_path: './src/utils/mean_std_with_rho.json'

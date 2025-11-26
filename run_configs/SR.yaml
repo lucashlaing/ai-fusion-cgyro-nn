@@ -12,6 +12,7 @@ board: True
 plot: False
 dump_dir: "./latest_res"
 checkpoint_path: "./checkpoints/model_final_checkpoint.pth"
+finetune: False
 base_seed: 42
 dataset_workers: 8
 batch: 4096

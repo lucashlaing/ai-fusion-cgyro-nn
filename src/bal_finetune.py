@@ -136,7 +136,8 @@ def run_train(cfg):
     print_gpu_mem("after gathering initial dataset")
     # moved model outside to continue training over BAL runs
     model =  MODEL_HANDLER["SR"](cfg.model)
-    # load_prev_model(model, cfg.checkpoint_path)
+    if cfg.finetune:
+        load_prev_model(model, cfg.checkpoint_path)
     # Retrains model from baseline after each BAL iteration 
     for i in range(num_iter):
         # 

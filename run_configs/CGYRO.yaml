@@ -12,9 +12,10 @@ board: True
 plot: False
 dump_dir: "./latest_res"
 checkpoint_path: "./checkpoints/model_final_checkpoint.pth"
+finetune: False
 base_seed: 42
 dataset_workers: 1
-batch: 256
+batch: 256 # try out bigger like 4000
 epochs: 10
 steps_per_epoch: 200
 loss_freq: 100
