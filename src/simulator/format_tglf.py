@@ -33,11 +33,13 @@ TGLF_KEYS_TO_REPLACE = {
     'USE_MHD_RULE': 'T',
     'USE_BPAR': 'F',
     'WRITE_WAVEFUNCTION_FLAG': 1,
-    'NKY': 24
+    'NKY': 12,
+    'USE_AVE_ION_GRID': 'F'
 }
 
 TGLF_KEYS_TO_ADD = {
-    'NMODES': 5
+    'NMODES': 5,
+    'KYGRID_MODEL': 4
 }
 
 def get_child_directories_at_depth_1(path_str):
