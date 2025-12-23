@@ -160,11 +160,6 @@ def run_train(cfg):
         # Infinite data loopers for training and testing
         train_loopers = InfiniteDataLooper(train_loader)
 
-        if hasattr(trainer.model, "module"):
-            trainer.model.module.report_stats()
-        else:
-            trainer.model.report_stats()
-
         # Training loop starts
         total_steps = cfg.epochs * cfg.steps_per_epoch
 
@@ -233,9 +228,9 @@ def run_train(cfg):
         if cfg.board:
             wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
 
-        print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
+        # print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
-        print(f"pool_tracker id in BAL: {id(bal.pool_tracker)}")
+        # print(f"pool_tracker id in BAL: {id(bal.pool_tracker)}")
         
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
@@ -243,8 +238,7 @@ def run_train(cfg):
 
         print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
         print(f"Pool tracker has {len(pool_tracker.used)} used samples before sampling")
-        new_samples = bal.propose_samples(trainer, base_trainer)
-        print(f"Pool tracker has {len(pool_tracker.used)} used samples after propose_samples")
+        new_samples = bal.propose_samples(trainer, baseModel)
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 
@@ -276,6 +270,7 @@ def run_train(cfg):
                 print(f'Query could not be matched in pool')
 
         print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+        print(f"Pool tracker has {len(pool_tracker.used)} used samples after saving")
         # cleaning up memory 
         del candidate_list
         os.remove(candidate_file)
