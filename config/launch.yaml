@@ -2,7 +2,7 @@ project_name: ai-fusion-cgyro-nn
 model:
   bal-abstracted-acq: 
     command: >- # download checkpoint without filtering, download TGLF-SiNN dataset
-      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data;) python src/bal_finetune.py finetune=True bal.acquisition_function=eig;
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; rm -rf online-bal/; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data;) python src/bal_finetune.py finetune=True bal.acquisition_function=eig;
     gpu_count: 2
     memory: 128
     cpu_count: 16
