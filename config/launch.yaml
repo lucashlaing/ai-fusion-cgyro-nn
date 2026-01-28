@@ -1,5 +1,12 @@
 project_name: ai-fusion-cgyro-nn
 model:
+  bal-abstracted-acq: 
+    command: >- # download checkpoint without filtering, download TGLF-SiNN dataset
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; rm -rf online-bal/; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data;) python src/bal_finetune.py finetune=True bal.acquisition_function=eig;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 200
   generate-initial-dataset-via-jacobian:
     command: >-
       [](make download file=ersp_res/700000_params.pth; cp ersp_res/700000_params.pth src/jacobian/;) cd src/jacobian; python generate_dataset.py -N <num_samples> -K <num_candidates>; cd ../../; cp "src/jacobian/samples_top<num_candidates>.pkl" "ersp_res/samples_top<num_candidates>_<index>.pkl"; make upload file="ersp_res/samples_top<num_candidates>_<index>.pkl";

@@ -1,6 +1,6 @@
 defaults:
   - bal: default
-  - dataset: SR_full_madcut
+  - dataset: SiNN_local
   - model: CGYRO
   - opt: CGYRO
   - _self_
