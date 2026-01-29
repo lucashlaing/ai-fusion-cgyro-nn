@@ -86,6 +86,53 @@ class StratUniGausStrat(BaseAcquisitionStrategy):
             strata_weights=[0.7, 0.2, 0.1],
             num_classes=3
         )
+
+
+class StratUniGausStrat2(BaseAcquisitionStrategy):
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Seperation, Uniform Budgeting, Gaussian Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+        
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_gaussian_boundary,
+            score_func=self._compute_eig_score,
+            num_strata=3,
+            strata_weights=[0.5, 0.3, 0.2],
+            num_classes=3
+        )
+
+class StratUniRan(BaseAcquisitionStrategy):
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Seperation, Uniform Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+        
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_random,
+            score_func=self._compute_eig_score,
+            num_strata=3,
+            strata_weights=[0.5, 0.3, 0.2],
+            num_classes=3
+        )
+
+
+class ResUniRan(BaseAcquisitionStrategy):
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual Seperation, Uniform Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+        
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_random,
+            num_classes=3
+        )
         
         
 STRATEGY_HANDLER = {
@@ -94,5 +141,9 @@ STRATEGY_HANDLER = {
     "eig_stratified": EIGStratifiedStrategy,
     "gaussian": GaussianStrategy,
     "direct": DirectStrategy,
-    "custom": StratUniGausStrat
+    "stratunigaus": StratUniGausStrat,
+    "stratunigaus2": StratUniGausStrat2,
+    "resuniran": ResUniRan,
+    "stratuniran": StratUniRan,
+
 }
