@@ -141,9 +141,9 @@ STRATEGY_HANDLER = {
     "eig_stratified": EIGStratifiedStrategy,
     "gaussian": GaussianStrategy,
     "direct": DirectStrategy,
-    "stratunigaus": StratUniGausStrat,
-    "stratunigaus2": StratUniGausStrat2,
-    "resuniran": ResUniRan,
-    "stratuniran": StratUniRan,
+    "strat_uni_gaus": StratUniGausStrat,
+    "strat_uni_gaus2": StratUniGausStrat2,
+    "res_uni_ran": ResUniRan,
+    "strat_uni_ran": StratUniRan,
 
 }
