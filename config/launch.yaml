@@ -1,41 +1,95 @@
 project_name: ai-fusion-cgyro-nn
 model:
+  bal-abstracted-acq-rand: 
+    command: >- 
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'random'
+      _bal_iter: 30
   bal-abstracted-acq-eig: 
     command: >- 
-      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func>;
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
     gpu_count: 2
     memory: 128
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
       _acq_func: 'eig'
+      _bal_iter: 30
+  bal-abstracted-acq-eig-strat: 
+    command: >- 
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'eig_stratified'
+      _bal_iter: 30
+  bal-abstracted-acq-gaus: 
+    command: >- 
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'gaussian'
+      _bal_iter: 30
+  bal-abstracted-acq-direct: 
+    command: >- 
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'direct'
+      _bal_iter: 30
+  bal-abstracted-acq-strat-uni-gaus: 
+    command: >- 
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'strat_uni_gaus'
+      _bal_iter: 30
   bal-abstracted-acq-strat-uni-gaus-2: 
     command: >- 
-      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func>;
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
     gpu_count: 2
     memory: 128
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
       _acq_func: 'strat_uni_gaus2'
+      _bal_iter: 30
   bal-abstracted-acq-res-uni-ran: 
     command: >- 
-      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func>;
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
     gpu_count: 2
     memory: 128
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
       _acq_func: 'res_uni_ran'
+      _bal_iter: 30
   bal-abstracted-acq-strat-uni-ran: 
     command: >- 
-      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func>;
+      [](make download file=online-bal/model_final_checkpoint.pth; mkdir checkpoints; mv online-bal/model_final_checkpoint.pth checkpoints/model_final_checkpoint.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter>;
     gpu_count: 2
     memory: 128
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
       _acq_func: 'strat_uni_ran'
+      _bal_iter: 30
 run:
   model: [bal-abstracted-acq-strat-uni-ran]
 
