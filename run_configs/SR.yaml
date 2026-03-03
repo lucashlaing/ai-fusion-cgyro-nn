@@ -2,7 +2,7 @@ defaults:
   - bal: default
   - dataset: SR_full_madcut
   - model: CGYRO
-  - opt: CGYRO
+  - opt: SR
   - _self_
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none

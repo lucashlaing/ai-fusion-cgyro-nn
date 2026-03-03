@@ -114,8 +114,8 @@ def run_train(cfg):
             
             if pool_tracker.is_used(found_input):
                 print(f'Warning: acquired duplicate candidates')
-                print(f'Physical params: {found_input[:31]}')
-                print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
+                # print(f'Physical params: {found_input[:31]}')
+                # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                 continue
                 
             pool_tracker.mark_used(found_input)
@@ -260,8 +260,8 @@ def run_train(cfg):
                 
                 if pool_tracker.is_used(found_input):
                     print(f'Warning: acquired duplicate candidates')
-                    print(f'Physical params: {found_input[:31]}')
-                    print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
+                    # print(f'Physical params: {found_input[:31]}')
+                    # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
                     continue
                     
                 pool_tracker.mark_used(found_input)

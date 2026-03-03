@@ -6,3 +6,4 @@ gnorm_clip: 1.0
 weight_decay: 0.0              # TURN OFF for small data
 gradient_accumulation_steps: 5  # simulate batch of 5
 random_loss: False             # for stability
+type: "adamw"                    # type of optimizer

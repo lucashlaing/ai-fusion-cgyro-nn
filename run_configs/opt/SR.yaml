@@ -1,8 +1,9 @@
-peak_lr: 5e-6                   # lower to be safe on small data
+peak_lr: 1e-4                   # lower to be safe on small data
 end_lr: 1e-7
 warmup_steps: 0                # no warmup needed
-decay_steps: 40                # total steps = 2 * 20 = 40
+decay_steps: 700000            # total steps = 2 * 20 = 40
 gnorm_clip: 1.0
-weight_decay: 0.0              # TURN OFF for small data
+weight_decay: 1e-4              # TURN OFF for small data
 gradient_accumulation_steps: 5  # simulate batch of 5
 random_loss: False             # for stability
+type: "adamw"                    # type of optimizer

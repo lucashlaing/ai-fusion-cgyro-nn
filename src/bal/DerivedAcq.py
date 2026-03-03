@@ -42,8 +42,8 @@ class EIGStratifiedStrategy(BaseAcquisitionStrategy):
             budgeter_func=self._budget_ranked_weights,
             selector_func=self._select_top_score,
             score_func=self._compute_eig_score,
-            num_strata=3,
-            strata_weights=[0.7, 0.2, 0.1]
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
         )
 
 class GaussianStrategy(BaseAcquisitionStrategy):
@@ -56,7 +56,7 @@ class GaussianStrategy(BaseAcquisitionStrategy):
             separator_func=self._separate_residual_classes,
             budgeter_func=self._budget_uniform,
             selector_func=self._select_gaussian_boundary,
-            num_classes=5,
+            num_classes=getattr(self.cfg, 'num_classes', 3)
         )
 
 class DirectStrategy(BaseAcquisitionStrategy):
@@ -82,27 +82,11 @@ class StratUniGausStrat(BaseAcquisitionStrategy):
             budgeter_func=self._budget_uniform,
             selector_func=self._select_gaussian_boundary,
             score_func=self._compute_eig_score,
-            num_strata=3,
-            strata_weights=[0.7, 0.2, 0.1],
-            num_classes=3
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+            num_classes=getattr(self.cfg, 'num_classes', 3)
         )
 
-
-class StratUniGausStrat2(BaseAcquisitionStrategy):
-    def acquire(self, candidates, trainer, lowerModel):
-        print("Running Stratified Seperation, Uniform Budgeting, Gaussian Selection Pipeline...")
-        if isinstance(candidates, tuple): candidates = candidates[0]
-        
-        return self._acquisition_pipeline(
-            candidates, trainer, lowerModel,
-            separator_func=self._separate_stratified_residual,
-            budgeter_func=self._budget_uniform,
-            selector_func=self._select_gaussian_boundary,
-            score_func=self._compute_eig_score,
-            num_strata=3,
-            strata_weights=[0.5, 0.3, 0.2],
-            num_classes=3
-        )
 
 class StratUniRan(BaseAcquisitionStrategy):
     def acquire(self, candidates, trainer, lowerModel):
@@ -115,9 +99,9 @@ class StratUniRan(BaseAcquisitionStrategy):
             budgeter_func=self._budget_uniform,
             selector_func=self._select_random,
             score_func=self._compute_eig_score,
-            num_strata=3,
-            strata_weights=[0.5, 0.3, 0.2],
-            num_classes=3
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+            num_classes=getattr(self.cfg, 'num_classes', 3)
         )
 
 
@@ -131,7 +115,7 @@ class ResUniRan(BaseAcquisitionStrategy):
             separator_func=self._separate_residual_classes,
             budgeter_func=self._budget_uniform,
             selector_func=self._select_random,
-            num_classes=3
+            num_strata=getattr(self.cfg, 'num_strata', 3)
         )
         
         
@@ -142,7 +126,6 @@ STRATEGY_HANDLER = {
     "gaussian": GaussianStrategy,
     "direct": DirectStrategy,
     "strat_uni_gaus": StratUniGausStrat,
-    "strat_uni_gaus2": StratUniGausStrat2,
     "res_uni_ran": ResUniRan,
     "strat_uni_ran": StratUniRan,
 

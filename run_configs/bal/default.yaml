@@ -8,3 +8,6 @@ model_count: 16
 dist_json_path: './src/utils/mean_std_with_rho.json'
 has_spectra: True
 iterations: 10
+num_classes: 3
+num_strata: 3
+strata_weights: [0.5, 0.3, 0.2]
