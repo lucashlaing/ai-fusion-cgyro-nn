@@ -44,26 +44,17 @@ def run_train(cfg):
 
     print(OmegaConf.to_yaml(cfg))
 
-    wandb_initialized = False
     if cfg.board:
-        
-        init_kwargs = {
-            "project": f"{cfg.project}-TGLF-FULL",
-            "config": OmegaConf.to_container(cfg, resolve=True),
-        }
-            
-        try:
-            wandb.init(**init_kwargs)
-            
-            with open_dict(cfg):
-                cfg.run_id = wandb.run.id
-                cfg.entity = wandb.run.entity
-                cfg.full_project_name = wandb.run.project
-            wandb_initialized = True
-
-        except Exception as e:
-            print(f"Warning: wandb init/resume failed: {e}")
-            wandb_initialized = False
+        wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
+        wandb.init(
+            project=f"{cfg.project}-offline-full-runs",
+            config=OmegaConf.to_container(cfg, resolve=True),
+            name=f"{time_stamp}_TGLF_FULL"
+        )
+        with open_dict(cfg):
+            cfg.run_id = wandb.run.id
+            cfg.entity = wandb.run.entity
+            cfg.full_project_name = wandb.run.project
 
     # Model and dataset creation
     project_name = cfg.project
