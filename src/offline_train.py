@@ -44,6 +44,10 @@ def run_train(cfg):
 
     print(OmegaConf.to_yaml(cfg))
 
+    # Print timestamp
+    time_stamp = datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S")
+    print("stamp: {}".format(time_stamp))
+
     if cfg.board:
         wandb.login(key='f143329a989e1852871928c4c018b121d35334a3') # TEMP FIX
         wandb.init(
@@ -82,10 +86,6 @@ def run_train(cfg):
         pin_memory=True,
         collate_fn=ragged_collate,
     )
-
-    # Print timestamp
-    time_stamp = datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S")
-    print("stamp: {}".format(time_stamp))
 
     # Infinite data loopers
     train_loopers = InfiniteDataLooper(train_loader)
