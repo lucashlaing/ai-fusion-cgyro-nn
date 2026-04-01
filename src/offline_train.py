@@ -131,6 +131,12 @@ def run_train(cfg):
             or (trainer.train_step % (cfg.plot_freq // 10) == 0 and trainer.train_step >= total_steps - cfg.plot_freq)
         ):
             with torch.no_grad():
+                current_lr = trainer.optimizer.param_groups[0]['lr']
+                if cfg.board:
+                    wandb.log({
+                        "step": trainer.train_step,
+                        "lr": current_lr
+                    })
                 test_data = next(test_loopers)
                 plot_dir = os.path.join(cfg.dump_dir, cfg.project, time_stamp, "png")
                 os.makedirs(plot_dir, exist_ok=True)

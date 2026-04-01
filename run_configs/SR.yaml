@@ -1,6 +1,6 @@
 defaults:
   - bal: default
-  - dataset: SR_full_madcut
+  - dataset: SiNN_local
   - model: CGYRO
   - opt: SR
   - _self_
@@ -14,7 +14,7 @@ dump_dir: "./latest_res"
 checkpoint_path: "./checkpoints/model_final_checkpoint.pth"
 finetune: False
 base_seed: 42
-dataset_workers: 8
+dataset_workers: 1
 batch: 4096
 epochs: 200
 steps_per_epoch: 875
