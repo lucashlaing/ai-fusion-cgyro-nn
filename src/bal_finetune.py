@@ -4,6 +4,8 @@ import hydra
 import wandb
 import pytz
 import hashlib
+import json
+import shutil
 from datetime import datetime
 import h5py
 import numpy as np
@@ -20,6 +22,8 @@ from utils import (
     InfiniteDataLooper,
     load_prev_model,
     UsageTracker,
+    upload_to_s3,
+    download_from_s3,
 )
 from tqdm import tqdm
 
@@ -47,6 +51,19 @@ def run_train(cfg):
     project_name = cfg.project
     full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool", False)
     pool_tracker = UsageTracker()
+
+    checkpoint_cfg = getattr(cfg.bal, "checkpoint", None)
+    checkpoint_enabled = bool(getattr(checkpoint_cfg, "enable", False)) if checkpoint_cfg is not None else False
+    checkpoint_root = getattr(checkpoint_cfg, "local_root", None) if checkpoint_cfg is not None else None
+    s3_uri = getattr(checkpoint_cfg, "s3_uri", "") if checkpoint_cfg is not None else ""
+    s3_prefix = _normalize_s3_prefix(s3_uri) if s3_uri else ""
+    resume_enabled = bool(getattr(cfg.bal, "resume", False))
+    resume_path = getattr(cfg.bal, "resume_path", "")
+    start_iter = 0
+    run_tag = f"{time_stamp}_BAL_{cfg.bal.acquisition_function}"
+    run_ckpt_root = None
+    resume_state = None
+    resume_model_state_path = None
 
     # Number of iterations to train / run BAL
     # For the last iteration, train but do not run further BAL
@@ -89,57 +106,102 @@ def run_train(cfg):
             cfg.entity = wandb.run.entity
             cfg.full_project_name = wandb.run.project
 
-    # set up initial training set
-    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-    bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker) 
-    
-    print(f'Acquiring initial train dataset')
-    new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
-
-    # Add the new candidates to our train folder
+    # set up initial training set (skip if resuming)
     train_dir = os.path.join(cfg.dataset.dataset_root, "train")
-    candidate_file = os.path.join(train_dir, "candidates.h5")
-    new_samples_full = []
-   
-    candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
-    for j in range(new_samples.shape[0]):
-        sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
-        full_sample = find_in_dataset(candidate_list, sample)
-        if full_sample is not None:
-            # full_sample[0] has shape (nky, 32) - all ky slices
-            # full_sample[1] has shape (nky, 4) - all flux outputs
-            
-            # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
-            found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
-            
-            if pool_tracker.is_used(found_input):
-                print(f'Warning: acquired duplicate candidates')
-                # print(f'Physical params: {found_input[:31]}')
-                # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
-                continue
-                
-            pool_tracker.mark_used(found_input)
-            new_samples_full.append(full_sample)  # Save the FULL sample with all ky
-        else:
-            print(f'Query could not be matched in pool')
+    if resume_enabled:
+        if not resume_path:
+            raise ValueError("cfg.bal.resume is True but cfg.bal.resume_path is empty")
 
-    total_num_samples = len(new_samples_full)
-    print(f'Number of acquired samples for initial train: {total_num_samples}')
+        local_resume_path = resume_path
+        if resume_path.startswith("s3://"):
+            if not checkpoint_root:
+                checkpoint_root = os.path.join(cfg.dump_dir, cfg.project, "bal_checkpoints")
+            local_resume_path = os.path.join(checkpoint_root, "resume_download")
+            download_from_s3(_normalize_s3_prefix(resume_path), local_resume_path)
 
+        state_path = os.path.join(local_resume_path, "run_state.json")
+        with open(state_path, "r") as f:
+            resume_state = json.load(f)
 
-    print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
-    # cleaning up memory 
-    del candidate_list
-    os.remove(candidate_file)
-    print("Candidate file deleted successfully")
-    bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
-    print_gpu_mem("after gathering initial dataset")
+        time_stamp = resume_state["time_stamp"]
+        run_tag = resume_state.get("run_tag", run_tag)
+        start_iter = resume_state.get("next_iteration", 0)
+        test_losses = resume_state.get("test_losses", [])
+        num_acquired_samples = resume_state.get("num_acquired_samples", [])
+        total_num_samples = resume_state.get("total_num_samples", 0)
+
+        run_ckpt_root = local_resume_path
+        resume_model_state_path = os.path.join(local_resume_path, resume_state["model_state_path"])
+
+        tracker_path = os.path.join(local_resume_path, resume_state["pool_tracker_path"])
+        pool_tracker.load(tracker_path)
+
+        train_snapshot = os.path.join(local_resume_path, resume_state["train_dir_snapshot"])
+        if os.path.isdir(train_snapshot):
+            _restore_train_dir(train_snapshot, train_dir)
+
+    else:
+        train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+        bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+
+        print(f"Acquiring initial train dataset")
+        new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
+
+        # Add the new candidates to our train folder
+        candidate_file = os.path.join(train_dir, "candidates.h5")
+        new_samples_full = []
+
+        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
+        for j in range(new_samples.shape[0]):
+            sample = new_samples[j, :]  # Shape (32,) - single ky slice from acquisition
+            full_sample = find_in_dataset(candidate_list, sample)
+            if full_sample is not None:
+                # full_sample[0] has shape (nky, 32) - all ky slices
+                # full_sample[1] has shape (nky, 4) - all flux outputs
+
+                # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
+                found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
+
+                if pool_tracker.is_used(found_input):
+                    print(f"Warning: acquired duplicate candidates")
+                    # print(f'Physical params: {found_input[:31]}')
+                    # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
+                    continue
+
+                pool_tracker.mark_used(found_input)
+                new_samples_full.append(full_sample)  # Save the FULL sample with all ky
+            else:
+                print(f"Query could not be matched in pool")
+
+        total_num_samples = len(new_samples_full)
+        print(f"Number of acquired samples for initial train: {total_num_samples}")
+
+        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+        # cleaning up memory
+        del candidate_list
+        os.remove(candidate_file)
+        print("Candidate file deleted successfully")
+        bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
+        print_gpu_mem("after gathering initial dataset")
     # moved model outside to continue training over BAL runs
-    model =  MODEL_HANDLER["SR"](cfg.model)
-    if cfg.finetune:
+    model = MODEL_HANDLER["SR"](cfg.model)
+    if resume_enabled and resume_model_state_path is not None:
+        _load_model_state(model, resume_model_state_path)
+    elif cfg.finetune:
         load_prev_model(model, cfg.checkpoint_path)
     # Retrains model from baseline after each BAL iteration 
-    for i in range(num_iter):
+    if checkpoint_enabled and run_ckpt_root is None:
+        if not checkpoint_root:
+            checkpoint_root = os.path.join(cfg.dump_dir, cfg.project, "bal_checkpoints")
+        run_ckpt_root = os.path.join(checkpoint_root, run_tag)
+        os.makedirs(run_ckpt_root, exist_ok=True)
+        OmegaConf.save(cfg, os.path.join(run_ckpt_root, "cfg.yaml"))
+
+    for i in range(start_iter, num_iter):
+        # Reseed per BAL iteration for deterministic-but-different sampling.
+        round_seed = cfg.base_seed + i
+        set_seed(round_seed)
+        tc_rng.manual_seed(round_seed)
         # 
         # load_prev_model(model, checkpoint_path)
         
@@ -287,6 +349,41 @@ def run_train(cfg):
 
         bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
+        if checkpoint_enabled and run_ckpt_root is not None:
+            iter_ckpt_dir = os.path.join(run_ckpt_root, f"iter_{i}")
+            os.makedirs(iter_ckpt_dir, exist_ok=True)
+
+            model_state_path = os.path.join(iter_ckpt_dir, "model_state.pt")
+            _save_model_state(trainer, model_state_path)
+
+            tracker_path = os.path.join(iter_ckpt_dir, "tracker.json")
+            pool_tracker.save(tracker_path)
+
+            train_snapshot_dir = os.path.join(iter_ckpt_dir, "train")
+            _restore_train_dir(train_dir, train_snapshot_dir)
+
+            OmegaConf.save(cfg, os.path.join(iter_ckpt_dir, "cfg.yaml"))
+
+            run_state = {
+                "run_tag": run_tag,
+                "time_stamp": time_stamp,
+                "acquisition_function": cfg.bal.acquisition_function,
+                "last_completed_iteration": i,
+                "next_iteration": i + 1,
+                "model_state_path": os.path.relpath(model_state_path, run_ckpt_root),
+                "pool_tracker_path": os.path.relpath(tracker_path, run_ckpt_root),
+                "train_dir_snapshot": os.path.relpath(train_snapshot_dir, run_ckpt_root),
+                "test_losses": test_losses,
+                "num_acquired_samples": num_acquired_samples,
+                "total_num_samples": total_num_samples,
+            }
+            _write_run_state(os.path.join(run_ckpt_root, "run_state.json"), run_state)
+
+            if s3_prefix:
+                s3_run_root = s3_prefix.rstrip("/") + f"/{run_tag}"
+                upload_to_s3(f"{s3_run_root}/iter_{i}", iter_ckpt_dir)
+                upload_to_s3(s3_run_root, os.path.join(run_ckpt_root, "run_state.json"))
+
     if cfg.board:
         wandb.finish()
         
@@ -333,6 +430,39 @@ def print_gpu_mem(note=""):
         alloc = torch.cuda.memory_allocated() / 1024**3
         reserved = torch.cuda.memory_reserved() / 1024**3
         print(f"[GPU Mem] {note} allocated={alloc:.2f} GB reserved={reserved:.2f} GB")
+
+
+def _save_model_state(trainer, save_path):
+    model = trainer.model.module if hasattr(trainer.model, "module") else trainer.model
+    torch.save(model.state_dict(), save_path)
+
+
+def _load_model_state(model, load_path):
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    state_dict = torch.load(load_path, map_location=device)
+    model.load_state_dict(state_dict)
+
+
+def _restore_train_dir(src_dir, dst_dir):
+    if os.path.isdir(dst_dir):
+        shutil.rmtree(dst_dir)
+    shutil.copytree(src_dir, dst_dir)
+
+
+def _write_run_state(path, state):
+    with open(path, "w") as f:
+        json.dump(state, f, indent=2)
+
+
+def _normalize_s3_prefix(s3_path):
+    if not s3_path:
+        return ""
+    if s3_path.startswith("s3://"):
+        bucket_prefix = "s3://ai-fusion-ga/"
+        if not s3_path.startswith(bucket_prefix):
+            raise ValueError(f"Unsupported S3 bucket in path: {s3_path}")
+        return s3_path[len(bucket_prefix):].lstrip("/")
+    return s3_path.lstrip("/")
 
 @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
 def main(cfg: DictConfig):

@@ -11,3 +11,11 @@ iterations: 10
 num_classes: 3
 num_strata: 3
 strata_weights: [0.5, 0.3, 0.2]
+
+# Checkpointing and resume
+resume: false
+resume_path: ""
+checkpoint:
+	enable: true
+	local_root: "./latest_res/bal_checkpoints"
+	s3_uri: ""

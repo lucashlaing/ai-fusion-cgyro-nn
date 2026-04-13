@@ -1,17 +1,26 @@
 import pandas as pd
 import matplotlib.pyplot as plt
+import numpy as np
 
 # --- USER CONFIGURATION PANEL ---
 RUNS_TO_PLOT = {
-    "20260217-224946_BAL_random_end_lr-1e-5_peak_lr-1e-3": "end_lr-1e-5_peak_lr-1e-3",
-    "20260217-002855_BAL_random-end_lr-1e-6_peak_lr-5e-4": "end_lr-1e-6_peak_lr-5e-4",
-    "20260216-220903_BAL_random-end-lr-1e-6": "end_lr-1e-6_peak_lr-1e-5",
-    "20260209-013107_BAL_random": "end_lr-5e-7_peak_lr-1e-5",
+    "20260316-191511_BAL_res_uni_ran": "Deviation-Uniform-Random",
+    "20260316-192244_BAL_strat_uni_ran": "UniBin-Uniform-Random",
+    "20260316-192842_BAL_gaussian": "Deviation-Weighted-Gaussian",
+    "20260316-193003_BAL_direct": "Uniform-Uniform-Direct",
+    "20260316-193541_BAL_eig_stratified": "UniBin-Weighted-EIG",
+    "20260316-193542_BAL_strat_uni_gaus": "Uniform-Uniform-Gaussian",
+    "20260316-193851_BAL_eig": "Uniform-Uniform-EIG",
+    "20260316-194249_BAL_random": "Uniform-Uniform-Random",   
 }
+
+# Configuration for the starting point (Baseline)
+INITIAL_LOSS = 0.058932207640497454
+INITIAL_SAMPLES = 20000
 # --------------------------------
 
-df_loss = pd.read_csv(r'test\lr-test-loss.csv')
-df_samples = pd.read_csv(r'test\lr-num-samples.csv')
+df_loss = pd.read_csv(r'test\redone-test-loss.csv')
+df_samples = pd.read_csv(r'test\redone-num-samples.csv')
 
 df_loss.columns = df_loss.columns.str.replace('"', '').str.strip()
 df_samples.columns = df_samples.columns.str.replace('"', '').str.strip()
@@ -37,22 +46,25 @@ for run_id, label in RUNS_TO_PLOT.items():
             increments = pd.to_numeric(run_data[s_col]).values
             
             # 3. Calculate Cumulative Sum: 
-            # We start at 20,000 and add the samples logged at each iteration
             # x_coords = [20k + iter0_samples, 20k + iter0 + iter1, ...]
-            x_coords = 20000 + increments.cumsum()
+            x_coords = INITIAL_SAMPLES + increments.cumsum()
             
-            # Note: If your first logged 'num_samples' is the full 30k (baseline + first batch), 
-            # use the previous logic but ensure we force floats:
-            # x_coords = 20000 + (increments - increments[0])
+            # --- NEW: Prepend the initial baseline point ---
+            x_coords = np.insert(x_coords, 0, INITIAL_SAMPLES)
+            y_vals = np.insert(y_vals, 0, INITIAL_LOSS)
+            # -----------------------------------------------
             
             plt.plot(x_coords, y_vals, label=label, marker='o', markersize=4)
             found_any = True
+    else:
+        print(f"{s_col} not found in data")
 
 if found_any:
     plt.xlabel('Total Cumulative Samples (Starting from 20k Baseline)')
     plt.ylabel('Test Loss')
-    plt.title('Learning Rates in Active Learning')
+    plt.title('Different Acq Functions in Active Learning')
     plt.grid(True, which="both", ls="-", alpha=0.5)
+    plt.axhline(y= 0.009)
     plt.legend()
     plt.tight_layout()
     output_path = 'weight_decay_comparison.png'

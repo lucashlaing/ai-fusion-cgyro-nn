@@ -366,6 +366,7 @@ class BaseAcquisitionStrategy:
         return self._deduplicate_selection(candidates, perm, budget,
                                             pre_selected_hashes=kwargs.get('pre_selected_hashes'))
 
+    # redo to be calibrated but keep it and see if u can 
     def _select_gaussian_boundary(self, candidates, budget, trainer, lowerModel, **kwargs):
         """Selects based on Gaussian uncertainty logic using metadata from Separator."""
         z_scores = kwargs.get('z_scores')
