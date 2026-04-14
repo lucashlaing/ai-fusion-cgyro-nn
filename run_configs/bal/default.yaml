@@ -15,7 +15,6 @@ strata_weights: [0.5, 0.3, 0.2]
 # Checkpointing and resume
 resume: false
 resume_path: ""
-checkpoint:
-	enable: true
-	local_root: "./latest_res/bal_checkpoints"
-	s3_uri: ""
+checkpoint_enable: true
+checkpoint_local_root: "./latest_res/bal_checkpoints"
+checkpoint_s3_uri: "offline_checkpoints/"

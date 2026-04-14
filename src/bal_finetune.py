@@ -52,10 +52,9 @@ def run_train(cfg):
     full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool", False)
     pool_tracker = UsageTracker()
 
-    checkpoint_cfg = getattr(cfg.bal, "checkpoint", None)
-    checkpoint_enabled = bool(getattr(checkpoint_cfg, "enable", False)) if checkpoint_cfg is not None else False
-    checkpoint_root = getattr(checkpoint_cfg, "local_root", None) if checkpoint_cfg is not None else None
-    s3_uri = getattr(checkpoint_cfg, "s3_uri", "") if checkpoint_cfg is not None else ""
+    checkpoint_enabled = bool(getattr(cfg.bal, "checkpoint_enable", False))
+    checkpoint_root = getattr(cfg.bal, "checkpoint_local_root", None)
+    s3_uri = getattr(cfg.bal, "checkpoint_s3_uri", "")
     s3_prefix = _normalize_s3_prefix(s3_uri) if s3_uri else ""
     resume_enabled = bool(getattr(cfg.bal, "resume", False))
     resume_path = getattr(cfg.bal, "resume_path", "")
