@@ -1,4 +1,3 @@
-epoch_per_training: 100
 initial_training_size: 20000
 acquisition_function: random # in [random, eig, direct, eig_stratified, gaussian, custom]
 n_samples: 200000

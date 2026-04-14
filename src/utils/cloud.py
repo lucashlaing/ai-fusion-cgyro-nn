@@ -3,6 +3,8 @@ import os
 
 # cloud related helper functions
 
+S3_ENDPOINT_URL = os.getenv("S3_ENDPOINT_URL", "https://s3-west.nrp-nautilus.io")
+
 def upload_to_s3(prefix, local_path):
     """
     Upload a file or all files in a directory to S3 bucket using s5cmd.
@@ -17,10 +19,12 @@ def upload_to_s3(prefix, local_path):
         # Upload all files in the directory
         if not local_path.endswith('/'):
             local_path += '/'
-        command = f's5cmd cp "{local_path}*" "{s3_destination}/"'
+        command = f's5cmd --endpoint-url "{S3_ENDPOINT_URL}" cp "{local_path}*" "{s3_destination}/"'
     else:
-        # Upload a single file
-        command = f's5cmd cp "{local_path}" "{s3_destination}"'
+        # Upload a single file (include filename in destination)
+        filename = os.path.basename(local_path)
+        s3_file_destination = s3_destination.rstrip("/") + f"/{filename}"
+        command = f's5cmd --endpoint-url "{S3_ENDPOINT_URL}" cp "{local_path}" "{s3_file_destination}"'
 
     print(f"Uploading from {local_path} to {s3_destination}")
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
@@ -49,11 +53,11 @@ def download_from_s3(prefix, target_path):
         if not prefix.endswith('/'):
             prefix += '/'
         s3_source = f"s3://ai-fusion-ga/ersp_res/{prefix}*"
-        command = f's5cmd cp "{s3_source}" "{target_path}"'
+        command = f's5cmd --endpoint-url "{S3_ENDPOINT_URL}" cp "{s3_source}" "{target_path}"'
     else:
         # Download a single file
         s3_source = f"s3://ai-fusion-ga/ersp_res/{prefix}"
-        command = f's5cmd cp "{s3_source}" "{target_path}"'
+        command = f's5cmd --endpoint-url "{S3_ENDPOINT_URL}" cp "{s3_source}" "{target_path}"'
 
     # Run the command
     print(f"Downloading from {s3_source} to {target_path}...")
