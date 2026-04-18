@@ -1,4 +1,5 @@
 import os
+import time
 import torch
 import hydra
 import wandb
@@ -100,6 +101,7 @@ def run_train(cfg):
         )
         wandb.define_metric("BAL/iteration") # specific counter for BAL
         wandb.define_metric("BAL/*", step_metric="BAL/iteration")
+        wandb.log({"BAL/mc_dropout_passes": int(cfg.bal.model_count)})
         with open_dict(cfg):
             cfg.run_id = wandb.run.id
             cfg.entity = wandb.run.entity
@@ -196,6 +198,16 @@ def run_train(cfg):
         os.makedirs(run_ckpt_root, exist_ok=True)
         OmegaConf.save(cfg, os.path.join(run_ckpt_root, "cfg.yaml"))
 
+    bal_timing_components = (
+        "candidate_proposal",
+        "uncertainty_mc_dropout",
+        "acquisition_score",
+        "model_retraining",
+    )
+    bal_timings = {k: 0.0 for k in bal_timing_components}
+    bal_timings_history = {k: [] for k in bal_timing_components}
+    bal_total_history = []
+
     for i in range(start_iter, num_iter):
         # Reseed per BAL iteration for deterministic-but-different sampling.
         round_seed = cfg.base_seed + i
@@ -231,6 +243,9 @@ def run_train(cfg):
         OmegaConf.save(cfg, ckpt_dir + "/cfg.yaml")
 
         print("Training starts...")
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        _t_retrain = time.time()
         for _ in tqdm(range(total_steps + 1)):
             # If first BAL iteration, compute test loss and get new samples before training
             # if i == 0:
@@ -270,6 +285,9 @@ def run_train(cfg):
             if trainer.train_step > 0 and (trainer.train_step % cfg.time_freq == 0):
                 ratio = (trainer.train_step - cfg.time_warm) / total_steps
                 timer.estimate_time("time estimate", ratio)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        bal_timings["model_retraining"] += time.time() - _t_retrain
         print("Training Done")
         print_gpu_mem("after training step")
         # Plot / log losses
@@ -291,10 +309,15 @@ def run_train(cfg):
 
         # print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
         bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        bal._timings = bal_timings
+        if getattr(bal, "strategy", None) is not None:
+            bal.strategy._timings = bal_timings
         # print(f"pool_tracker id in BAL: {id(bal.pool_tracker)}")
-        
+
         # Last iteration (or pool empty), do not run BAL, only train
         if i == num_iter - 1 or bal.is_pool_empty():
+            # Discard partial timings for the terminal iter so means stay clean
+            bal_timings = {k: 0.0 for k in bal_timing_components}
             break
 
         print(f'Acquiring new samples via BAL using {cfg.bal.acquisition_function}')
@@ -348,6 +371,17 @@ def run_train(cfg):
 
         bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"BAL_{i}_new.h5")
 
+        bal_iter_total = sum(bal_timings.values())
+        bal_total_history.append(bal_iter_total)
+        for _name, _val in bal_timings.items():
+            bal_timings_history[_name].append(_val)
+        if cfg.board:
+            log_map = {"BAL/iteration": i, "BAL/total_timing": bal_iter_total}
+            for _name, _val in bal_timings.items():
+                log_map[f"BAL/{_name}_timing"] = _val
+            wandb.log(log_map)
+        bal_timings = {k: 0.0 for k in bal_timing_components}
+
         if checkpoint_enabled and run_ckpt_root is not None:
             iter_ckpt_dir = os.path.join(run_ckpt_root, f"iter_{i}")
             os.makedirs(iter_ckpt_dir, exist_ok=True)
@@ -384,8 +418,17 @@ def run_train(cfg):
                 upload_to_s3(s3_run_root, os.path.join(run_ckpt_root, "run_state.json"))
 
     if cfg.board:
+        timing_means = {
+            f"BAL/{name}_timing_mean": (sum(vals) / len(vals) if vals else 0.0)
+            for name, vals in bal_timings_history.items()
+        }
+        timing_means["BAL/total_timing_mean"] = (
+            sum(bal_total_history) / len(bal_total_history) if bal_total_history else 0.0
+        )
+        timing_means["BAL/mc_dropout_passes"] = int(cfg.bal.model_count)
+        wandb.log(timing_means)
         wandb.finish()
-        
+
     pool_tracker.save(f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/tracker.json")
 
 def ragged_collate(batch):

@@ -463,27 +463,44 @@ class BaseAcquisitionStrategy:
         return mean_flux, torch.arange(len(mean_flux))
 
     def _compute_eig_score(self, candidates, trainer):
+        timings = getattr(self, "_timings", None)
         start_time = time.time()
-        
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_mc = time.time()
         all_predictions = self.get_prediction(candidates, trainer.model)
-        
-        var_predictions = torch.var(all_predictions, dim=0) 
-        mean_var = torch.mean(var_predictions, dim=1) 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        mc_dt = time.time() - t_mc
+        if timings is not None:
+            timings["uncertainty_mc_dropout"] += mc_dt
+
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        t_acq = time.time()
+        var_predictions = torch.var(all_predictions, dim=0)
+        mean_var = torch.mean(var_predictions, dim=1)
         prior = self.compute_entropy(mean_var)
 
         mean_predictions = torch.mean(all_predictions, dim=0)
         new_predictions = self.get_entropy(trainer, (candidates, mean_predictions))
-        
+
         new_var_predictions = torch.var(new_predictions, dim=0)
         new_mean_var = torch.mean(new_var_predictions, dim=1)
         posterior = self.compute_entropy(new_mean_var)
 
         eig = prior - posterior
         eig = torch.nan_to_num(eig, nan=0.0)
-        
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        acq_dt = time.time() - t_acq
+        if timings is not None:
+            timings["acquisition_score"] += acq_dt
+
         end_time = time.time()
         print(f"EIG Computation time: {end_time - start_time:.2f}s")
-        
+
         return eig, torch.argsort(eig, descending=True)
     
     def get_prediction(self, input, model):

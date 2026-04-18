@@ -81,9 +81,17 @@ class BAL():
 
     def propose_samples(self, trainer, lowerModel):
         train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
         start = time.time()
         candidates = self.sample_candidates(self.cfg.n_samples, self.cfg.dist_json_path, train_dir)
-        print(f"Candidates found in {time.time() - start:.2f}s")
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        dt = time.time() - start
+        print(f"Candidates found in {dt:.2f}s")
+        timings = getattr(self, "_timings", None)
+        if timings is not None:
+            timings["candidate_proposal"] += dt
         if isinstance(candidates, tuple):
             candidates = candidates[0]
         proposed_samples = self.strategy.acquire(candidates, trainer, lowerModel)

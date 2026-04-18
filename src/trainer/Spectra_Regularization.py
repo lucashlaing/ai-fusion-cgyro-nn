@@ -137,7 +137,6 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
-
         self.train_step += 1
 
         if return_loss:
@@ -150,29 +149,34 @@ class Spectra_Regularization_Trainer(Base_Trainer):
         self.model.eval()
         losses = []
 
-        with torch.no_grad():  # disable autograd graph building
+        with torch.no_grad():
             for data in dataloader:
                 data = self.move_to_device(data)
                 loss = self.get_loss(data)
-                # detach from graph and move to CPU as a float
                 losses.append(loss.item())
 
         return sum(losses) / len(losses)
 
-    
     def get_test_rmsle(self, dataloader):
         """
-        Calculate loss
-
-        Args:
-            dataloader: The data loader to get data.
+        Calculate RMSLE on real-space predictions:
+        RMSLE = sqrt( (1/N) * sum( ||ln(1+|y'|) - ln(1+|y|)||^2 ) )
         """
-        losses = []
-        for data in dataloader:
-            data = self.move_to_device(data)
-            loss = self.rmlse(data)
-            losses.append(loss)
-        return torch.sqrt(sum(losses)/ len(losses))
+        self.model.eval()
+        all_preds, all_targets = [], []
+
+        with torch.no_grad():
+            for data in dataloader:
+                data = self.move_to_device(data)
+                pred = self.get_pred(data)
+                _, target = self.get_input_target(data)
+                all_preds.append(pred.detach().cpu())
+                all_targets.append(target.detach().cpu())
+
+        preds = torch.cat(all_preds, dim=0)
+        targets = torch.cat(all_targets, dim=0)
+        diff = torch.log(1 + torch.abs(preds)) - torch.log(1 + torch.abs(targets))
+        return torch.sqrt(torch.mean(diff ** 2)).item()
     
     def get_metrics(self, data):
         # move to device
