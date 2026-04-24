@@ -48,14 +48,14 @@ class EIGStratifiedStrategy(BaseAcquisitionStrategy):
 
 class GaussianStrategy(BaseAcquisitionStrategy):
     def acquire(self, candidates, trainer, lowerModel):
-        print("Running Gaussian Pipeline...")
+        print("Running Gaussian Pipeline (k-means boundary selection)...")
         if isinstance(candidates, tuple): candidates = candidates[0]
-        
+
         return self._acquisition_pipeline(
             candidates, trainer, lowerModel,
             separator_func=self._separate_residual_classes,
             budgeter_func=self._budget_uniform,
-            selector_func=self._select_gaussian_boundary,
+            selector_func=self._select_kmeans_boundary,
             num_classes=getattr(self.cfg, 'num_classes', 3)
         )
 

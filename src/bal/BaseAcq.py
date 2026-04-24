@@ -395,6 +395,38 @@ class BaseAcquisitionStrategy:
         return self._deduplicate_selection(candidates, sorted_indices, budget,
                                             pre_selected_hashes=kwargs.get('pre_selected_hashes'))
 
+    def _select_kmeans_boundary(self, candidates, budget, trainer, lowerModel, **kwargs):
+        """
+        K-means-style boundary selection (one centroid per class).
+
+        Scoring: mahalanobis-like distance from the class centroid × MC-dropout
+        uncertainty. Top scores = candidates on the class boundary that the
+        model is also unsure about.
+        """
+        std_val = kwargs.get('std')
+
+        if std_val is None:
+            preds      = self.get_prediction(candidates, trainer.model)
+            base_preds = self.get_prediction(candidates, lowerModel)
+            diff       = torch.asinh(preds) - torch.asinh(base_preds)
+            residuals  = torch.sum(diff ** 2, dim=2)
+            std_val    = residuals.std(dim=0) + 1e-12
+        std_val = std_val.view(-1).to(candidates.device)
+
+        class_mean = candidates.mean(dim=0, keepdim=True)
+        class_std  = candidates.std(dim=0, keepdim=True) + 1e-12
+
+        normed = (candidates - class_mean) / class_std
+        dist   = torch.norm(normed, dim=1)
+
+        scores = dist * std_val
+
+        _, sorted_indices = torch.sort(scores, descending=True)
+        return self._deduplicate_selection(
+            candidates, sorted_indices, budget,
+            pre_selected_hashes=kwargs.get('pre_selected_hashes'),
+        )
+
     def _select_direct_algorithm(self, candidates, budget, trainer, lowerModel, **kwargs):
         """Wraps DIRECT algorithm, returns indices, deduplicates results."""
         # 1. Pre-compute Hash Map for O(1) lookup later
