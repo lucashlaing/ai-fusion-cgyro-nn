@@ -572,6 +572,97 @@ class BaseAcquisitionStrategy:
         print(f"MES Computation time: {time.time() - start_time:.2f}s")
         return final_scores, torch.argsort(final_scores, descending=True)
 
+    def _output_density_1d(self, values, bins=200):
+        """1-D histogram density: returns p[N] = normalized bin height at each
+        value's location. O(N), GPU-safe, no host sync."""
+        v = torch.nan_to_num(values.detach(), nan=0.0, posinf=0.0, neginf=0.0)
+        vmin, vmax = v.min(), v.max()
+        if (vmax - vmin) < 1e-12:
+            return torch.ones_like(v)
+        steps = torch.linspace(0, 1, bins + 1, device=v.device, dtype=v.dtype)
+        edges = vmin + steps * (vmax - vmin)
+        idx = (torch.bucketize(v, edges, right=False) - 1).clamp(0, bins - 1)
+        counts = torch.bincount(idx, minlength=bins).to(v.dtype)
+        width = (vmax - vmin) / bins
+        density = counts / (counts.sum() * width + 1e-12)  # ~pdf, integrates to ~1
+        return density[idx]
+
+    def _compute_ow_score(self, candidates, trainer,
+                          use_residual=False, weight_clamp_q=0.99, hist_bins=200,
+                          use_input_density=True, input_cols=31,
+                          px_reduce="geomean"):
+        """
+        Output-Weighted acquisition (US-LW: Uncertainty Sampling, Likelihood-
+        Weighted) for the multi-output CGYRO surrogate.
+
+        Weight: w = p_x(x) / p_y(mu(x)). p_x is the input distribution,
+        approximated as the (independence) combination of per-input-feature
+        1-D marginal histograms over the candidate columns [:input_cols] -- a
+        full joint density in 31-D is intractable. p_y is the per-channel
+        predicted-output density. score = sum_c var_c * clamp(w_c).
+
+        Args:
+            use_residual: False -> weight on the model's predicted
+                flux. True -> weight on the RESIDUAL over lowerModel
+            weight_clamp_q: per-channel quantile cap on the combined weight.
+            hist_bins: bins for every 1-D histogram (input and output).
+            use_input_density: include p_x. False -> w = 1/p_y (pool already
+                iid from p_x, so p_x cancels for in-pool ranking).
+            input_cols: how many leading candidate columns define p_x
+                (default 31 = physical params; col 31 is ky, excluded).
+            px_reduce: "geomean" -> exp(mean(log p_i)), keeps p_x on the same
+                scale as one density (recommended); "product" -> the true
+                joint under independence (huge dynamic range, swamps 1/p_y).
+        """
+        start_time = time.time()
+
+        # 1. MC-dropout predictions.
+        preds = torch.asinh(self.get_prediction(candidates, trainer.model))
+
+        if use_residual:
+            raise NotImplementedError(
+                "Residual OW QoI not wired yet: pass lowerModel in and "
+                "subtract its asinh prediction here.")
+
+        mu = preds.mean(dim=0)
+        var = preds.var(dim=0)
+
+        # 3. Flatten anything past the candidate axis into channels (robust to
+        #    an extra ky dim); keep ALL channels.
+        N = mu.shape[0]
+        mu = mu.reshape(N, -1)
+        var = var.reshape(N, -1)
+        C = mu.shape[1]
+
+        # 3b. Input density p_x ~ combination of per-feature 1-D marginals.
+        if use_input_density:
+            cols = min(input_cols, candidates.shape[1])
+            log_px = torch.zeros(N, dtype=mu.dtype)
+            for f in range(cols):
+                p_f = self._output_density_1d(candidates[:, f].to(mu.dtype),
+                                              bins=hist_bins)
+                log_px = log_px + torch.log(p_f + 1e-12)
+            if px_reduce == "geomean":
+                log_px = log_px / max(cols, 1)
+            p_x = torch.exp(log_px).to(mu.device)
+        else:
+            p_x = torch.ones(N, dtype=mu.dtype, device=mu.device)
+
+        # 4 + 5. Per-channel weight w_c = p_x / p_y, clamped per channel.
+        w = torch.empty_like(mu)
+        for c in range(C):
+            p_y = self._output_density_1d(mu[:, c], bins=hist_bins)
+            w_c = p_x / (p_y + 1e-12)
+            cap = torch.quantile(w_c, weight_clamp_q)
+            w[:, c] = torch.clamp(w_c, max=cap)
+
+        # 6. US-LW score, summed over all channels.
+        final_scores = (var * w).sum(dim=1)
+        final_scores = torch.nan_to_num(final_scores, nan=0.0)
+
+        print(f"OW Computation time: {time.time() - start_time:.2f}s")
+        return final_scores, torch.argsort(final_scores, descending=True)
+
     def get_prediction(self, input, model):
         predictions_per_ky = []
         chunk_size = 50000

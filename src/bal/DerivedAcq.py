@@ -200,6 +200,38 @@ class StratMESKmeans(BaseAcquisitionStrategy):
         )
 
 
+class GloUniOW(BaseAcquisitionStrategy):
+    """Global pool + uniform budget + top output-weighted (US-LW) selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Global Separation, Uniform Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_global,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+        )
+
+
+class StratRankOW(BaseAcquisitionStrategy):
+    """Residual strata + OW-ranked budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, OW-Ranked Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
 STRATEGY_HANDLER = {
     "random": RandomStrategy,
     "eig": EIGStrategy,
@@ -214,4 +246,6 @@ STRATEGY_HANDLER = {
     "strat_uni_kmeans": StratUniKmeans,
     "strat_eig_kmeans": StratEIGKmeans,
     "strat_mes_kmeans": StratMESKmeans,
+    "glo_uni_ow": GloUniOW,
+    "strat_rank_ow": StratRankOW,
 }
