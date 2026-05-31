@@ -96,6 +96,7 @@ def run_train(cfg):
     if torch.is_tensor(current_test_loss):
         current_test_loss = current_test_loss.detach().cpu().item()
     test_losses.append(current_test_loss)
+    print("MANAGED TO GIT PULL LATEST")
     print("BEST TEST LOSS ", current_test_loss)
     
     if cfg.board:
