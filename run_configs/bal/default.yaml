@@ -5,6 +5,7 @@ new_sample_size: 10000
 entropy_training_steps: 100
 model_count: 16
 dist_json_path: './src/utils/mean_std_with_rho.json'
+knn_max_std: 1.55 # Per-feature KNN drop threshold (JSON-std units)
 has_spectra: True
 iterations: 10
 num_classes: 3

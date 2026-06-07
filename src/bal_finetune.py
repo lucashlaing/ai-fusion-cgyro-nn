@@ -148,40 +148,22 @@ def run_train(cfg):
         print(f"Acquiring initial train dataset")
         new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
 
-        # Add the new candidates to our train folder
-        candidate_file = os.path.join(train_dir, "candidates.h5")
         new_samples_full = []
-
-        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
-        for j in range(new_samples.shape[0]):
-            sample = new_samples[j, :]  # Shape (32,) - single ky slice from acquisition
-            full_sample = find_in_dataset(candidate_list, sample)
-            if full_sample is not None:
-                # full_sample[0] has shape (nky, 32) - all ky slices
-                # full_sample[1] has shape (nky, 4) - all flux outputs
-
-                # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
-                found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
-
-                if pool_tracker.is_used(found_input):
-                    print(f"Warning: acquired duplicate candidates")
-                    # print(f'Physical params: {found_input[:31]}')
-                    # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
-                    continue
-
-                pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)  # Save the FULL sample with all ky
-            else:
+        matched_samples = bal.lookup_real_samples(new_samples)
+        for full_sample in matched_samples:
+            if full_sample is None:
                 print(f"Query could not be matched in pool")
+                continue
+            found_input = full_sample[0][0]
+            if pool_tracker.is_used(found_input):
+                print(f"Warning: acquired duplicate candidates")
+                continue
+            pool_tracker.mark_used(found_input)
+            new_samples_full.append(full_sample)
 
         total_num_samples = len(new_samples_full)
         print(f"Number of acquired samples for initial train: {total_num_samples}")
-
-        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
-        # cleaning up memory
-        del candidate_list
-        os.remove(candidate_file)
-        print("Candidate file deleted successfully")
+        print(f"Retrieved {len(new_samples_full)} full samples via KNN lookup.")
         bal.save_new_samples_as_h5(cfg.dataset, new_samples_full, train_dir, filename=f"initial_train.h5")
         print_gpu_mem("after gathering initial dataset")
     # moved model outside to continue training over BAL runs
@@ -326,39 +308,21 @@ def run_train(cfg):
         save_path = bal.save_top_k_candidates(new_samples, ckpt_dir)
         print(f"Candidates saved at {save_path}")
 
-        # Add the new candidates to our train folder
-        train_dir = os.path.join(cfg.dataset.dataset_root, "train")
-        candidate_file = os.path.join(train_dir, "candidates.h5")
         new_samples_full = []
-    
-        candidate_list = bal.read_h5_dataset(candidate_file, cfg.dataset)
-        for j in range(new_samples.shape[0]):
-            sample = new_samples[j,:]  # Shape (32,) - single ky slice from acquisition
-            full_sample = find_in_dataset(candidate_list, sample)
-            if full_sample is not None:
-                # full_sample[0] has shape (nky, 32) - all ky slices
-                # full_sample[1] has shape (nky, 4) - all flux outputs
-                
-                # Extract first ky slice to check/mark usage (all slices have same first 31 dims)
-                found_input = full_sample[0][0]  # Shape (32,) - first ky slice only
-                
-                if pool_tracker.is_used(found_input):
-                    print(f'Warning: acquired duplicate candidates')
-                    # print(f'Physical params: {found_input[:31]}')
-                    # print(f'Query ky: {sample[-1].item()}, Found ky: {found_input[-1].item()}')
-                    continue
-                    
-                pool_tracker.mark_used(found_input)
-                new_samples_full.append(full_sample)  # Save the FULL sample with all ky
-            else:
+        matched_samples = bal.lookup_real_samples(new_samples)
+        for full_sample in matched_samples:
+            if full_sample is None:
                 print(f'Query could not be matched in pool')
+                continue
+            found_input = full_sample[0][0]
+            if pool_tracker.is_used(found_input):
+                print(f'Warning: acquired duplicate candidates')
+                continue
+            pool_tracker.mark_used(found_input)
+            new_samples_full.append(full_sample)
 
-        print(f"Retrieved {len(new_samples_full)} full samples from candidate file.")
+        print(f"Retrieved {len(new_samples_full)} full samples via KNN lookup.")
         print(f"Pool tracker has {len(pool_tracker.used)} used samples after saving")
-        # cleaning up memory 
-        del candidate_list
-        os.remove(candidate_file)
-        print("Candidate file deleted successfully")
 
         num_acq = len(new_samples_full)
         num_acquired_samples.append(num_acq)
