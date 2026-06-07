@@ -699,79 +699,86 @@ class BaseAcquisitionStrategy:
         input_path = os.path.join(dataset_cfg.dataset_root, "train")
         temp_h5_path = os.path.join(input_path, "temp_entropy_data.h5")
 
-        # try:
-        #     with h5py.File(temp_h5_path, 'w') as f:
-        #         candidates_np = candidates.cpu().numpy()
-        #         n_samples = candidates_np.shape[0]
-                
-        #         input_features = candidates_np[:, 0, :-1]
-        #         ky_values = candidates_np[:, :, -1]
-                
-        #         for i, key in enumerate(dataset_cfg.input_keys):
-        #             f.create_dataset(key, data=input_features[:, i])
-        #         for i, key in enumerate(dataset_cfg.spectra_function_keys):
-        #             if key == "ky": f.create_dataset(key, data=ky_values)
-                
-        #         if predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
-        #             preds_per_ky_np = predictions_per_ky.cpu().numpy()
-        #             if len(preds_per_ky_np.shape) == 4:
-        #                 mean_preds_per_ky = np.mean(preds_per_ky_np, axis=0)
-        #             else:
-        #                 mean_preds_per_ky = preds_per_ky_np
-                    
-        #             n_samples, nky, _ = mean_preds_per_ky.shape
-        #             ns, nf = 3, 2
-        #             sumf = np.zeros((n_samples, nky, 2, nf, ns, 5))
-                    
-        #             for slice_idx in range(2):
-        #                 sumf[:, :, slice_idx, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
-        #                 sumf[:, :, slice_idx, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
-        #                 sumf[:, :, slice_idx, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
-        #                 sumf[:, :, slice_idx, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
-                        
-        #                 q_ions = mean_preds_per_ky[:, :, 2] / ((ns - 1) * nf)
-        #                 p_ions = mean_preds_per_ky[:, :, 3] / ((ns - 1) * nf)
-                        
-        #                 for field_idx in range(nf):
-        #                     for ion_idx in range(1, ns):
-        #                         sumf[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-        #                         sumf[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
-                    
-        #             f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf)
-            
-        #         meta_grp = f.create_group("meta")
-        #         meta_grp.create_dataset(dataset_cfg.mask_key, data=mask.cpu().numpy())
-        #         meta_grp.create_dataset("total_count", data=np.full((n_samples,), mask.shape[1], dtype=np.int32))
+        # Treat the model's predictions on the candidates as ground truth and
+        # write them (with their ky grid) as a temporary h5 into the train
+        # folder, so the retrained dataloader below trains on the real train
+        # data PLUS these candidates. The file is removed in the finally block.
+        try:
+            with h5py.File(temp_h5_path, "w") as f:
+                candidates_np = candidates.cpu().numpy()
+                n_samples = candidates_np.shape[0]
 
-        # except OSError as e:
-        #     raise RuntimeError(f"Failed to write temp file: {e}")
+                input_features = candidates_np[:, 0, :-1]   # (n_samples, 31)
+                ky_values = candidates_np[:, :, -1]         # (n_samples, nky)
 
-        new_dataset = Spectra_Regularization_DataPipe(
-            dataset_cfg,
-            getattr(self.run_cfg, 'dataset_workers', 1),
-            getattr(self.run_cfg, 'base_seed', 42),
-            "train"
-        )
-        
-        trainer_class = type(trainer)
-        new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
+                for i, key in enumerate(dataset_cfg.input_keys):
+                    f.create_dataset(key, data=input_features[:, i])
+                for key in dataset_cfg.spectra_function_keys:
+                    if key == "ky":
+                        f.create_dataset(key, data=ky_values)
 
-        train_loader = DataLoader(
-            new_dataset,
-            batch_size=self.run_cfg.batch,
-            num_workers=getattr(self.run_cfg, 'dataset_workers', 1),
-            pin_memory=True,
-            collate_fn=self.ragged_collate
-        )
-        train_looper = InfiniteDataLooper(train_loader)
+                if predictions_per_ky is not None and len(dataset_cfg.intermediate_target_keys) > 0:
+                    preds_per_ky_np = predictions_per_ky.cpu().numpy()
+                    if preds_per_ky_np.ndim == 4:
+                        mean_preds_per_ky = np.mean(preds_per_ky_np, axis=0)
+                    else:
+                        mean_preds_per_ky = preds_per_ky_np
 
-        for step in range(getattr(self.cfg, 'entropy_training_steps', 1000)):
-            new_trainer.iter(next(train_looper))
+                    n_samples, nky, _ = mean_preds_per_ky.shape
+                    ns, nf = 3, 2
+                    # Inverse of the target derivation in Spectra_Regularization:
+                    # distribute the 4 predicted channels back into the sumf
+                    # layout so the dataloader re-derives the same Ge/Qe/Qi/Pi.
+                    sumf = np.zeros((n_samples, nky, 2, nf, ns, 5))
+                    for slice_idx in range(2):
+                        sumf[:, :, slice_idx, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
+                        sumf[:, :, slice_idx, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
+                        sumf[:, :, slice_idx, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
+                        sumf[:, :, slice_idx, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
 
-        new_predictions = self.get_prediction(inputs, new_trainer.model)
+                        q_ions = mean_preds_per_ky[:, :, 2] / ((ns - 1) * nf)
+                        p_ions = mean_preds_per_ky[:, :, 3] / ((ns - 1) * nf)
 
-        if os.path.exists(temp_h5_path):
-            os.remove(temp_h5_path)
+                        for field_idx in range(nf):
+                            for ion_idx in range(1, ns):
+                                sumf[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
+                                sumf[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
+
+                    f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf)
+
+                meta_grp = f.create_group("meta")
+                meta_grp.create_dataset(dataset_cfg.mask_key, data=mask.cpu().numpy())
+                meta_grp.create_dataset("total_count", data=np.full((n_samples,), mask.shape[1], dtype=np.int32))
+        except OSError as e:
+            raise RuntimeError(f"Failed to write temp candidate file: {e}")
+
+        try:
+            new_dataset = Spectra_Regularization_DataPipe(
+                dataset_cfg,
+                getattr(self.run_cfg, 'dataset_workers', 1),
+                getattr(self.run_cfg, 'base_seed', 42),
+                "train"
+            )
+
+            trainer_class = type(trainer)
+            new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
+
+            train_loader = DataLoader(
+                new_dataset,
+                batch_size=self.run_cfg.batch,
+                num_workers=getattr(self.run_cfg, 'dataset_workers', 1),
+                pin_memory=True,
+                collate_fn=self.ragged_collate
+            )
+            train_looper = InfiniteDataLooper(train_loader)
+
+            for step in range(getattr(self.cfg, 'entropy_training_steps', 1000)):
+                new_trainer.iter(next(train_looper))
+
+            new_predictions = self.get_prediction(inputs, new_trainer.model)
+        finally:
+            if os.path.exists(temp_h5_path):
+                os.remove(temp_h5_path)
 
         return new_predictions
 

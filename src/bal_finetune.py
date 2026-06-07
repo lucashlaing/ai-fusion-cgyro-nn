@@ -149,18 +149,21 @@ def run_train(cfg):
         new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
 
         new_samples_full = []
+        n_unmatched = 0
+        n_duplicate = 0
         matched_samples = bal.lookup_real_samples(new_samples)
         for full_sample in matched_samples:
             if full_sample is None:
-                print(f"Query could not be matched in pool")
+                n_unmatched += 1
                 continue
             found_input = full_sample[0][0]
             if pool_tracker.is_used(found_input):
-                print(f"Warning: acquired duplicate candidates")
+                n_duplicate += 1
                 continue
             pool_tracker.mark_used(found_input)
             new_samples_full.append(full_sample)
 
+        print(f"Skipped {n_unmatched} unmatched queries and {n_duplicate} duplicate candidates")
         total_num_samples = len(new_samples_full)
         print(f"Number of acquired samples for initial train: {total_num_samples}")
         print(f"Retrieved {len(new_samples_full)} full samples via KNN lookup.")
@@ -309,17 +312,21 @@ def run_train(cfg):
         print(f"Candidates saved at {save_path}")
 
         new_samples_full = []
+        n_unmatched = 0
+        n_duplicate = 0
         matched_samples = bal.lookup_real_samples(new_samples)
         for full_sample in matched_samples:
             if full_sample is None:
-                print(f'Query could not be matched in pool')
+                n_unmatched += 1
                 continue
             found_input = full_sample[0][0]
             if pool_tracker.is_used(found_input):
-                print(f'Warning: acquired duplicate candidates')
+                n_duplicate += 1
                 continue
             pool_tracker.mark_used(found_input)
             new_samples_full.append(full_sample)
+
+        print(f"Skipped {n_unmatched} unmatched queries and {n_duplicate} duplicate candidates")
 
         print(f"Retrieved {len(new_samples_full)} full samples via KNN lookup.")
         print(f"Pool tracker has {len(pool_tracker.used)} used samples after saving")
