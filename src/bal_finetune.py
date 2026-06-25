@@ -7,6 +7,9 @@ import pytz
 import hashlib
 import json
 import shutil
+import copy
+import math
+import glob
 from datetime import datetime
 import h5py
 import numpy as np
@@ -175,7 +178,9 @@ def run_train(cfg):
         _load_model_state(model, resume_model_state_path)
     elif cfg.finetune:
         load_prev_model(model, cfg.checkpoint_path)
-    # Retrains model from baseline after each BAL iteration 
+    # Snapshot baseline weights so each BAL iteration retrains from scratch
+    initial_model_state = copy.deepcopy(model.state_dict())
+    # Retrains model from baseline after each BAL iteration
     if checkpoint_enabled and run_ckpt_root is None:
         if not checkpoint_root:
             checkpoint_root = os.path.join(cfg.dump_dir, cfg.project, "bal_checkpoints")
@@ -198,13 +203,20 @@ def run_train(cfg):
         round_seed = cfg.base_seed + i
         set_seed(round_seed)
         tc_rng.manual_seed(round_seed)
-        # 
-        # load_prev_model(model, checkpoint_path)
-        
+
+        # Reset to baseline so this iteration trains from scratch on the grown dataset
+        model.load_state_dict(initial_model_state)
+
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
 
-        # Trainer creation
-        trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
+        # Derive steps_per_epoch from the live train-set size so `epochs` means true passes
+        train_size = _count_train_samples(train_dir, cfg.dataset.input_keys[0])
+        steps_per_epoch = math.ceil(train_size / cfg.batch)
+        total_steps = cfg.epochs * steps_per_epoch
+        print(f"BAL iter {i}: train_size={train_size}, steps_per_epoch={steps_per_epoch}, total_steps={total_steps}")
+
+        # Trainer creation (pass total_steps so the LR schedule tracks actual training length)
+        trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng, total_train_steps=total_steps)
 
         # Data loaders creation
         train_loader = DataLoader(
@@ -218,8 +230,7 @@ def run_train(cfg):
         # Infinite data loopers for training and testing
         train_loopers = InfiniteDataLooper(train_loader)
 
-        # Training loop starts
-        total_steps = cfg.epochs * cfg.steps_per_epoch
+        # Training loop starts (total_steps derived above from live train-set size)
 
         # Save model config to the checkpoint dir
         ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}/BAL_{i}"
@@ -454,6 +465,15 @@ def _load_model_state(model, load_path):
     device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
     state_dict = torch.load(load_path, map_location=device)
     model.load_state_dict(state_dict)
+
+
+def _count_train_samples(train_dir, input_key):
+    """Count training samples across all h5 files in train_dir (lazy shape read)."""
+    total = 0
+    for fp in glob.glob(os.path.join(train_dir, "**/*.h5"), recursive=True):
+        with h5py.File(fp, "r") as f:
+            total += f[input_key].shape[0]
+    return total
 
 
 def _restore_train_dir(src_dir, dst_dir):
