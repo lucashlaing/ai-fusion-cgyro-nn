@@ -236,15 +236,25 @@ class Offline(BAL):
         self._last_knn_distances = best_dist
         self._last_knn_indices = best_idx
 
-        # Per-feature drop mask: drop a candidate if its nearest real point is
-        # more than knn_max_std away on ANY single feature.
-        knn_max_std = float(getattr(self.cfg, "knn_max_std", 1.55))
-        drop_mask = np.abs(delta_norm).max(axis=1) > knn_max_std
+        # Drop mask: drop a candidate if its nearest real point is too far in a
+        # single COMBINED-std sense across all 31 features. Each feature is
+        # already in units of its own JSON-std (syn_norm = phys / std above), so
+        # no high-magnitude feature dominates. We use the RMS of the per-feature
+        # std-deltas -- combined_std = sqrt(mean_i (delta_i/std_i)^2)
+        # = best_dist / sqrt(n_features) -- i.e. "the average # of stds off,
+        # across all features." This replaces the old per-feature max (L-inf)
+        # gate, which dropped a candidate for one slightly-off feature even when
+        # the other 30 matched well. knn_max_std is now that combined-std radius.
+        n_features = delta_norm.shape[1]
+        combined_std = best_dist / np.sqrt(n_features)
+        knn_max_std = float(getattr(self.cfg, "knn_max_std", 0.9))
+        drop_mask = combined_std > knn_max_std
 
-        # Distance summary (in JSON-std units; ~1 means "one JSON-std away").
-        pcts = np.percentile(best_dist, [50, 90, 95, 99, 100])
-        print(f"[Offline] KNN ||syn - real|| in JSON-std units: "
-              f"min={best_dist.min():.3f} median={pcts[0]:.3f} "
+        # Distance summary (combined-std = RMS over features; ~1 means "one
+        # JSON-std off on average" -- same scale as knn_max_std).
+        pcts = np.percentile(combined_std, [50, 90, 95, 99, 100])
+        print(f"[Offline] KNN combined-std (RMS over {n_features} feats): "
+              f"min={combined_std.min():.3f} median={pcts[0]:.3f} "
               f"p90={pcts[1]:.3f} p95={pcts[2]:.3f} p99={pcts[3]:.3f} "
               f"max={pcts[4]:.3f}")
         input_keys = list(self.run_cfg.dataset.input_keys)
@@ -265,14 +275,14 @@ class Offline(BAL):
             file_samples = self.pool_dataset._load_file_lazy(file_idx)
             for sample_idx, j in hits:
                 if drop_mask[j]:
-                    continue  # nearest real point too far on some feature
+                    continue  # nearest real point too far (combined-std)
                 out[j] = file_samples[sample_idx]
 
         n_dropped = int(drop_mask.sum())
         n_unique = len(set(int(i) for i in best_idx))
         print(f"[Offline] KNN: {len(best_idx)} synthetic -> {n_unique} unique "
               f"real points ({len(best_idx) - n_unique} collisions); "
-              f"dropped {n_dropped} (>{knn_max_std} std on a feature).")
+              f"dropped {n_dropped} (combined-std >{knn_max_std}).")
         return out
 
     def make_hash(self, input_tensor):
