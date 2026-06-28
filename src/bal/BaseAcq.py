@@ -366,62 +366,50 @@ class BaseAcquisitionStrategy:
         return self._deduplicate_selection(candidates, perm, budget,
                                             pre_selected_hashes=kwargs.get('pre_selected_hashes'))
 
-    # redo to be calibrated but keep it and see if u can 
-    def _select_gaussian_boundary(self, candidates, budget, trainer, lowerModel, **kwargs):
-        """Selects based on Gaussian uncertainty logic using metadata from Separator."""
-        z_scores = kwargs.get('z_scores')
-        std_val = kwargs.get('std')
-        
-        if z_scores is None:
-            print("[BAL] _select_gaussian_boundary: 'z_scores' missing. Calculating fallback Residuals...")
-            residuals, _ = self._compute_residual_metrics(candidates, trainer, lowerModel)
-            
-            mean = residuals.mean()
-            std_val = residuals.std() + 1e-12
-            z_scores = (residuals - mean) / std_val
-        
-        # If std_val wasn't passed or calculated, assume 1.0
-        if std_val is None: std_val = 1.0
-
-        class_id = kwargs.get('class_id', 0)
-        
-        threshold = class_id + 0.5
-        distances = torch.abs(torch.abs(z_scores) - threshold)
-        
-        # Score = uncertainty / distance
-        scores = std_val / (distances + 1e-12)
-        
-        _, sorted_indices = torch.sort(scores, descending=True)
-        return self._deduplicate_selection(candidates, sorted_indices, budget,
-                                            pre_selected_hashes=kwargs.get('pre_selected_hashes'))
-
-    def _select_kmeans_boundary(self, candidates, budget, trainer, lowerModel, **kwargs):
+    def _select_p_flip(self, candidates, budget, trainer, lowerModel, **kwargs):
         """
-        K-means-style boundary selection (one centroid per class).
+        Boundary-refinement selection via flip probability.
 
-        Scoring: mahalanobis-like distance from the class centroid × MC-dropout
-        uncertainty. Top scores = candidates on the class boundary that the
-        model is also unsure about.
+        QoI = the same residual the strata are built from: the squared
+        asinh-deviation of the model's prediction from the cheap base model,
+        summed over output channels, evaluated per MC-dropout pass. This gives a
+        1-D predictive distribution per candidate: mean `mu`, std `sigma`. Within
+        this stratum the residual occupies a band [lo, hi] (robust quantiles of
+        mu). The flip probability is the predictive mass that lands OUTSIDE that
+        band -- the chance the candidate's residual would put it in a neighbouring
+        stratum:
+
+            p_flip = 1 - [ Phi((hi - mu)/sigma) - Phi((lo - mu)/sigma) ]
+
+        p_flip is high when a candidate sits at the edge of the stratum's
+        residual band AND the model is uncertain (large sigma) -- the points
+        whose stratum membership could flip, which are the most informative for
+        pinning the boundary. We take the top `budget` by p_flip.
+
+        Using the residual (not raw output) keeps the QoI consistent with how the
+        strata are defined. The residual is non-negative/right-skewed, so the
+        Gaussian (Phi) flip mass is an approximation; swap to the empirical
+        across-pass fraction for a distribution-free version.
         """
-        std_val = kwargs.get('std')
+        # 1. Residual QoI distribution per candidate from MC dropout -- matches
+        #    the stratification metric (squared asinh-deviation from base).
+        preds = torch.asinh(self.get_prediction(candidates, trainer.model))  # [T, n, ...]
+        base  = torch.asinh(self.get_prediction(candidates, lowerModel))     # [T, n, ...]
+        resid = ((preds - base) ** 2).flatten(2).sum(dim=2)                  # [T, n] residual/pass
+        mu    = resid.mean(dim=0)                                            # [n]
+        sigma = resid.std(dim=0) + 1e-9                                      # [n]
 
-        if std_val is None:
-            preds      = self.get_prediction(candidates, trainer.model)
-            base_preds = self.get_prediction(candidates, lowerModel)
-            diff       = torch.asinh(preds) - torch.asinh(base_preds)
-            residuals  = torch.sum(diff ** 2, dim=2)
-            std_val    = residuals.std(dim=0) + 1e-12
-        std_val = std_val.view(-1).to(candidates.device)
+        # 2. This stratum's residual band edges (robust to outliers).
+        lo = torch.quantile(mu, 0.02)
+        hi = torch.quantile(mu, 0.98)
 
-        class_mean = candidates.mean(dim=0, keepdim=True)
-        class_std  = candidates.std(dim=0, keepdim=True) + 1e-12
+        # 3. Flip probability = predictive mass outside [lo, hi] under N(mu, sigma).
+        normal = torch.distributions.Normal(0.0, 1.0)
+        p_stay = normal.cdf((hi - mu) / sigma) - normal.cdf((lo - mu) / sigma)
+        p_flip = (1.0 - p_stay).clamp(0.0, 1.0)
+        p_flip = torch.nan_to_num(p_flip, nan=0.0)
 
-        normed = (candidates - class_mean) / class_std
-        dist   = torch.norm(normed, dim=1)
-
-        scores = dist * std_val
-
-        _, sorted_indices = torch.sort(scores, descending=True)
+        _, sorted_indices = torch.sort(p_flip, descending=True)
         return self._deduplicate_selection(
             candidates, sorted_indices, budget,
             pre_selected_hashes=kwargs.get('pre_selected_hashes'),

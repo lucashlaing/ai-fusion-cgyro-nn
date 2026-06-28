@@ -48,14 +48,14 @@ class EIGStratifiedStrategy(BaseAcquisitionStrategy):
 
 class GaussianStrategy(BaseAcquisitionStrategy):
     def acquire(self, candidates, trainer, lowerModel):
-        print("Running Gaussian Pipeline (k-means boundary selection)...")
+        print("Running Gaussian Pipeline (p_flip boundary selection)...")
         if isinstance(candidates, tuple): candidates = candidates[0]
 
         return self._acquisition_pipeline(
             candidates, trainer, lowerModel,
             separator_func=self._separate_residual_classes,
             budgeter_func=self._budget_uniform,
-            selector_func=self._select_kmeans_boundary,
+            selector_func=self._select_p_flip,
             num_classes=getattr(self.cfg, 'num_classes', 3)
         )
 
@@ -70,23 +70,6 @@ class DirectStrategy(BaseAcquisitionStrategy):
             budgeter_func=self._budget_uniform,
             selector_func=self._select_direct_algorithm
         )
-
-class StratUniGausStrat(BaseAcquisitionStrategy):
-    def acquire(self, candidates, trainer, lowerModel):
-        print("Running Stratified Seperation, Uniform Budgeting, Gaussian Selection Pipeline...")
-        if isinstance(candidates, tuple): candidates = candidates[0]
-        
-        return self._acquisition_pipeline(
-            candidates, trainer, lowerModel,
-            separator_func=self._separate_stratified_residual,
-            budgeter_func=self._budget_uniform,
-            selector_func=self._select_gaussian_boundary,
-            score_func=self._compute_eig_score,
-            num_strata=getattr(self.cfg, 'num_strata', 3),
-            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
-            num_classes=getattr(self.cfg, 'num_classes', 3)
-        )
-
 
 class StratUniRan(BaseAcquisitionStrategy):
     def acquire(self, candidates, trainer, lowerModel):
@@ -152,31 +135,31 @@ class StratRankMES(BaseAcquisitionStrategy):
 
 
 class StratUniKmeans(BaseAcquisitionStrategy):
-    """Residual strata + uniform budget + k-means boundary selection."""
+    """Residual strata + uniform budget + p_flip boundary selection."""
     def acquire(self, candidates, trainer, lowerModel):
-        print("Running Stratified Separation, Uniform Budgeting, K-means Boundary Selection Pipeline...")
+        print("Running Stratified Separation, Uniform Budgeting, p_flip Boundary Selection Pipeline...")
         if isinstance(candidates, tuple): candidates = candidates[0]
 
         return self._acquisition_pipeline(
             candidates, trainer, lowerModel,
             separator_func=self._separate_stratified_residual,
             budgeter_func=self._budget_uniform,
-            selector_func=self._select_kmeans_boundary,
+            selector_func=self._select_p_flip,
             num_strata=getattr(self.cfg, 'num_strata', 3),
         )
 
 
 class StratEIGKmeans(BaseAcquisitionStrategy):
-    """Residual strata + EIG-ranked budget + k-means boundary selection."""
+    """Residual strata + EIG-ranked budget + p_flip boundary selection."""
     def acquire(self, candidates, trainer, lowerModel):
-        print("Running Stratified Separation, EIG-Ranked Budgeting, K-means Boundary Selection Pipeline...")
+        print("Running Stratified Separation, EIG-Ranked Budgeting, p_flip Boundary Selection Pipeline...")
         if isinstance(candidates, tuple): candidates = candidates[0]
 
         return self._acquisition_pipeline(
             candidates, trainer, lowerModel,
             separator_func=self._separate_stratified_residual,
             budgeter_func=self._budget_ranked_weights,
-            selector_func=self._select_kmeans_boundary,
+            selector_func=self._select_p_flip,
             score_func=self._compute_eig_score,
             num_strata=getattr(self.cfg, 'num_strata', 3),
             strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
@@ -184,16 +167,16 @@ class StratEIGKmeans(BaseAcquisitionStrategy):
 
 
 class StratMESKmeans(BaseAcquisitionStrategy):
-    """Residual strata + MES-ranked budget + k-means boundary selection."""
+    """Residual strata + MES-ranked budget + p_flip boundary selection."""
     def acquire(self, candidates, trainer, lowerModel):
-        print("Running Stratified Separation, MES-Ranked Budgeting, K-means Boundary Selection Pipeline...")
+        print("Running Stratified Separation, MES-Ranked Budgeting, p_flip Boundary Selection Pipeline...")
         if isinstance(candidates, tuple): candidates = candidates[0]
 
         return self._acquisition_pipeline(
             candidates, trainer, lowerModel,
             separator_func=self._separate_stratified_residual,
             budgeter_func=self._budget_ranked_weights,
-            selector_func=self._select_kmeans_boundary,
+            selector_func=self._select_p_flip,
             score_func=self._compute_mes_score,
             num_strata=getattr(self.cfg, 'num_strata', 3),
             strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
@@ -238,7 +221,6 @@ STRATEGY_HANDLER = {
     "eig_stratified": EIGStratifiedStrategy,
     "gaussian": GaussianStrategy,
     "direct": DirectStrategy,
-    "strat_uni_gaus": StratUniGausStrat,
     "res_uni_ran": ResUniRan,
     "strat_uni_ran": StratUniRan,
     "glo_uni_mes": GloUniMES,
