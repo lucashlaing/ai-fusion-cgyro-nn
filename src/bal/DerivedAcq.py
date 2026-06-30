@@ -81,7 +81,8 @@ class StratUniRan(BaseAcquisitionStrategy):
             separator_func=self._separate_stratified_residual,
             budgeter_func=self._budget_uniform,
             selector_func=self._select_random,
-            score_func=self._compute_eig_score,
+            # No score_func: selection is random, so the expensive EIG retrain
+            # was pure waste (computed then discarded). Dropped.
             num_strata=getattr(self.cfg, 'num_strata', 3),
             strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
             num_classes=getattr(self.cfg, 'num_classes', 3)

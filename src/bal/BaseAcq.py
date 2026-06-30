@@ -771,30 +771,39 @@ class BaseAcquisitionStrategy:
         return new_predictions
 
     def regroup_datapoints(self, flat_candidates, flat_predictions, max_ky=24, pad_value=float('nan')):
+        # Recover the per-sample ky groups (rows sharing the same 31 input
+        # features) and pad/truncate each to max_ky. Vectorized sort+scatter
+        # (O(N log N)) -- equivalent to the old per-group boolean-mask loop
+        # (O(N^2)) but orders of magnitude faster; drops no datapoints.
         features_only = flat_candidates[:, :31]
         unique_feats, inverse_indices = torch.unique(features_only, dim=0, return_inverse=True)
-        num_samples = unique_feats.size(0)
+        U = unique_feats.size(0)
+        Fc, Fp = flat_candidates.size(1), flat_predictions.size(1)
 
-        grouped_c, grouped_p, masks = [], [], []
+        if U == 0:
+            return (torch.empty((0, max_ky, Fc), dtype=flat_candidates.dtype),
+                    torch.empty((0, max_ky, Fp), dtype=flat_predictions.dtype),
+                    torch.empty((0, max_ky), dtype=torch.float32))
 
-        for i in range(num_samples):
-            mask = (inverse_indices == i)
-            rows_c = flat_candidates[mask]
-            rows_p = flat_predictions[mask]
-            nky = rows_c.size(0)
+        # within-group position of each row, in original row order (stable sort
+        # keeps original order inside each group, matching the old rows[:max_ky]
+        # truncation that kept the first max_ky rows).
+        order = torch.argsort(inverse_indices, stable=True)
+        counts = torch.bincount(inverse_indices, minlength=U)   # rows per group
+        group_start = counts.cumsum(0) - counts                 # first sorted slot per group
+        pos_sorted = torch.arange(inverse_indices.size(0)) - group_start[inverse_indices[order]]
+        pos = torch.empty_like(pos_sorted)
+        pos[order] = pos_sorted                                 # back to original row order
 
-            row_mask = torch.zeros(max_ky, dtype=torch.float32)
-            if nky > max_ky:
-                rows_c, rows_p = rows_c[:max_ky], rows_p[:max_ky]
-            elif nky < max_ky:
-                pad_c = torch.full((max_ky - nky, 32), pad_value, dtype=rows_c.dtype)
-                pad_p = torch.full((max_ky - nky, 4), pad_value, dtype=rows_p.dtype)
-                rows_c = torch.cat([rows_c, pad_c], dim=0)
-                rows_p = torch.cat([rows_p, pad_p], dim=0)
-                row_mask[nky:] = 1
+        keep = pos < max_ky                                     # truncate overfull groups
+        g, p = inverse_indices[keep], pos[keep]
 
-            grouped_c.append(rows_c)
-            grouped_p.append(rows_p)
-            masks.append(row_mask)
+        grouped_c = torch.full((U, max_ky, Fc), pad_value, dtype=flat_candidates.dtype)
+        grouped_p = torch.full((U, max_ky, Fp), pad_value, dtype=flat_predictions.dtype)
+        grouped_c[g, p] = flat_candidates[keep]
+        grouped_p[g, p] = flat_predictions[keep]
 
-        return torch.stack(grouped_c), torch.stack(grouped_p), torch.stack(masks)
+        # mask: 1 where the slot is padding (col index >= filled rows in group).
+        valid = counts.clamp(max=max_ky)
+        masks = (torch.arange(max_ky).unsqueeze(0) >= valid.unsqueeze(1)).to(torch.float32)
+        return grouped_c, grouped_p, masks
