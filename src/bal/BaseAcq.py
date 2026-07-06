@@ -523,43 +523,6 @@ class BaseAcquisitionStrategy:
 
         return eig, torch.argsort(eig, descending=True)
 
-    def _compute_mes_score(self, candidates, trainer):
-        """
-        Max-Value Entropy Search using a retrained posterior to estimate y*.
-        Same compute footprint as _compute_eig_score (one full retrain + MC pass).
-        """
-        start_time = time.time()
-
-        # 1. Retrained posterior over the full candidate pool (same cost as EIG's posterior step)
-        mean_preds = torch.mean(self.get_prediction(candidates, trainer.model), dim=0)
-        retrained_predictions = self.get_entropy(trainer, (candidates, mean_preds))
-        retrained_predictions = torch.asinh(retrained_predictions)
-
-        # 2. Empirical y* per posterior sample, then average
-        y_stars, _ = torch.max(retrained_predictions, dim=1)
-        mean_y_star = torch.mean(y_stars, dim=0)
-
-        # 3. Candidate predictive μ, σ (re-uses MC dropout)
-        candidate_preds = torch.asinh(self.get_prediction(candidates, trainer.model))
-        mu = torch.mean(candidate_preds, dim=0)
-        sigma = torch.std(candidate_preds, dim=0) + 1e-9
-
-        # 4. MES closed form
-        gamma = (mean_y_star - mu) / sigma
-        normal = torch.distributions.Normal(0, 1)
-        pdf = torch.exp(normal.log_prob(gamma))
-        cdf = normal.cdf(gamma)
-        mes_scores = (gamma * pdf) / (2 * (cdf + 1e-9)) - torch.log(cdf + 1e-9)
-        mes_scores = torch.nan_to_num(mes_scores, nan=0.0)
-
-        if mes_scores.dim() > 1:
-            final_scores = torch.mean(mes_scores, dim=list(range(1, mes_scores.dim())))
-        else:
-            final_scores = mes_scores
-
-        print(f"MES Computation time: {time.time() - start_time:.2f}s")
-        return final_scores, torch.argsort(final_scores, descending=True)
-
     def _output_density_1d(self, values, bins=200):
         """1-D histogram density: returns p[N] = normalized bin height at each
         value's location. O(N), GPU-safe, no host sync."""
