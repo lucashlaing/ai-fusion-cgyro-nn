@@ -258,7 +258,7 @@ model:
       _end_lr: 1e-5
       _peak_lr: 1e-3
       _weight_decay: 1e-5
-  bal-abstracted-acq-gaussian: 
+  bal-abstracted-acq-res_uni_pflip: 
     command: >- 
       [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
     gpu_count: 2
@@ -266,7 +266,7 @@ model:
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
-      _acq_func: 'gaussian'
+      _acq_func: 'res_uni_pflip'
       _bal_iter: 30
       _end_lr: 1e-5
       _peak_lr: 1e-3
@@ -323,20 +323,66 @@ model:
       _end_lr: 1e-5
       _peak_lr: 1e-3
       _weight_decay: 1e-4
-  bal-abstracted-acq-glo_uni_mes: 
-    command: >- 
+  bal-acq-random-hpsweep:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=<new_sample_size> bal.n_samples=400000 opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 2
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: 'random'
+      _bal_iter: 45
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: [16, 24]
+      _new_sample_size: [20000, 30000]
+  bal-acq-sweep:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.knn_max_std=1.63 bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['random', 'eig', 'eig_stratified', 'res_uni_pflip', 'direct', 'res_uni_ran', 'strat_uni_ran', 'strat_uni_pflip', 'strat_eig_pflip', 'glo_uni_ow', 'strat_rank_ow']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
+  # Same as bal-acq-sweep but warm-starts each BAL iter from the prev weights
+  # (bal.continuous_retrain=true) instead of resetting to baseline. A/B vs the
+  # from-scratch sweep -- everything else identical (60 iters, epochs=16).
+  bal-acq-sweep-continuous:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.knn_max_std=1.63 bal.continuous_retrain=true bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['random', 'eig', 'eig_stratified', 'res_uni_pflip', 'direct', 'res_uni_ran', 'strat_uni_ran', 'strat_uni_pflip', 'strat_eig_pflip', 'glo_uni_ow', 'strat_rank_ow']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
+  bal-abstracted-acq-strat_uni_pflip:
+    command: >-
       [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
     gpu_count: 2
     memory: 128
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
-      _acq_func: 'glo_uni_mes'
+      _acq_func: 'strat_uni_pflip'
       _bal_iter: 30
       _end_lr: 1e-5
       _peak_lr: 1e-3
       _weight_decay: 1e-5
-  bal-abstracted-acq-strat_rank_mes: 
+  bal-abstracted-acq-strat_eig_pflip: 
     command: >- 
       [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
     gpu_count: 2
@@ -344,46 +390,7 @@ model:
     cpu_count: 16
     ephemeral_storage: 500
     hparam:
-      _acq_func: 'strat_rank_mes'
-      _bal_iter: 30
-      _end_lr: 1e-5
-      _peak_lr: 1e-3
-      _weight_decay: 1e-5
-  bal-abstracted-acq-strat_uni_kmeans: 
-    command: >- 
-      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
-    gpu_count: 2
-    memory: 128
-    cpu_count: 16
-    ephemeral_storage: 500
-    hparam:
-      _acq_func: 'strat_uni_kmeans'
-      _bal_iter: 30
-      _end_lr: 1e-5
-      _peak_lr: 1e-3
-      _weight_decay: 1e-5
-  bal-abstracted-acq-strat_eig_kmeans: 
-    command: >- 
-      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
-    gpu_count: 2
-    memory: 128
-    cpu_count: 16
-    ephemeral_storage: 500
-    hparam:
-      _acq_func: 'strat_eig_kmeans'
-      _bal_iter: 30
-      _end_lr: 1e-5
-      _peak_lr: 1e-3
-      _weight_decay: 1e-5
-  bal-abstracted-acq-strat_mes_kmeans: 
-    command: >- 
-      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
-    gpu_count: 2
-    memory: 128
-    cpu_count: 16
-    ephemeral_storage: 500
-    hparam:
-      _acq_func: 'strat_mes_kmeans'
+      _acq_func: 'strat_eig_pflip'
       _bal_iter: 30
       _end_lr: 1e-5
       _peak_lr: 1e-3
@@ -492,16 +499,4 @@ model:
 
 
 run:
-  model: [bal-abstracted-acq-random2]
-  # bal-abstracted-acq-strat-uni-ran, bal-abstracted-acq-res-uni-ran, bal-abstracted-acq-strat_uni_gaus, bal-abstracted-acq-direct, bal-abstracted-acq-gaussian, bal-abstracted-acq-eig_stratified, bal-abstracted-acq-eig, bal-abstracted-acq-random
-# STRATEGY_HANDLER = {
-#     "random": RandomStrategy,
-#     "eig": EIGStrategy,
-#     "eig_stratified": EIGStratifiedStrategy,
-#     "gaussian": GaussianStrategy,
-#     "direct": DirectStrategy,
-#     "strat_uni_gaus": StratUniGausStrat,
-#     "strat_uni_gaus2": StratUniGausStrat2,
-#     "res_uni_ran": ResUniRan,
-#     "strat_uni_ran": StratUniRan,
-# }
+  model: [bal-acq-sweep-continuous]
