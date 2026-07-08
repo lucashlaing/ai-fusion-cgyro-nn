@@ -16,7 +16,7 @@ import numpy as np
 import os
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
-from bal import BAL_HANDLER
+from bal import BAL_HANDLER, SAMPLING_HANDLER
 from trainer import TRAINER_HANDLER
 from dataset import DATSET_HANDLER
 from model import MODEL_HANDLER
@@ -55,6 +55,15 @@ def run_train(cfg):
     project_name = cfg.project
     full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool", False)
     pool_tracker = UsageTracker()
+
+    # Candidate-sampling regime for CGYRO: offline (random-from-pool, exact-hash,
+    # no KNN -- default) vs online (synthetic JSON generation + KNN lookup).
+    _sampling_mode = cfg.bal.get("sampling_mode", "offline")
+    if project_name == "CGYRO":
+        BalClass = SAMPLING_HANDLER[_sampling_mode]
+    else:
+        BalClass = BAL_HANDLER[project_name]
+    print(f"[BAL] sampling_mode={_sampling_mode} -> {BalClass.__name__}")
 
     checkpoint_enabled = bool(getattr(cfg.bal, "checkpoint_enable", False))
     checkpoint_root = getattr(cfg.bal, "checkpoint_local_root", None)
@@ -146,7 +155,7 @@ def run_train(cfg):
 
     else:
         train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-        bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        bal = BalClass(cfg, train_datapipe, full_dataset, pool_tracker)
 
         print(f"Acquiring initial train dataset")
         new_samples = bal.get_initial_dataset(cfg.bal.initial_training_size)
@@ -309,7 +318,7 @@ def run_train(cfg):
             wandb.log({"BAL/iteration": i, "BAL/test_loss": current_test_loss})
 
         # print(f"pool_tracker id before BAL creation: {id(pool_tracker)}")
-        bal = BAL_HANDLER[project_name](cfg, train_datapipe, full_dataset, pool_tracker)
+        bal = BalClass(cfg, train_datapipe, full_dataset, pool_tracker)
         bal._timings = bal_timings
         if getattr(bal, "strategy", None) is not None:
             bal.strategy._timings = bal_timings

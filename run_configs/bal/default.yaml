@@ -1,7 +1,8 @@
-initial_training_size: 90000 # accounting for 30% survival rate
+sampling_mode: offline # offline = random-from-pool (real fluxes, exact-hash lookup, no KNN); online = synthetic JSON generation + K=1 KNN + knn_max_std filter
+initial_training_size: 20000 # offline: real target (no KNN survival). online assumed ~30% survival -> 90000.
 acquisition_function: random # in [random, eig, eig_stratified, direct, res_uni_ran, res_uni_pflip, strat_uni_ran, strat_uni_pflip, strat_eig_pflip, glo_uni_ow, strat_rank_ow]
 n_samples: 200000
-new_sample_size: 10000
+new_sample_size: 10000 # offline: ~= actual acquired/iter (only dup drop, no ~0.33 KNN survival)
 entropy_training_steps: 100
 model_count: 16
 dist_json_path: './src/utils/mean_std_with_rho.json'

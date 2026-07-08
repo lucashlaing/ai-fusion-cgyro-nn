@@ -3,29 +3,28 @@ sys.path.append('../')
 
 import torch
 import random
-import json
-import time
 import os
 import h5py
 import numpy as np
 import gc
 import hashlib
 from collections import defaultdict
-from pathlib import Path
-from dataset import Spectra_Regularization_DataPipe
-from torch.utils.data import DataLoader
-from utils import InfiniteDataLooper
 sys.path.append('./src/bal/')
 from BAL import BAL
-from bal.sample_data import generate_samples
-from bal.generate_ky_spectra import load_npy_or_npz, compute_ky_matrix_skip_bad
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class Offline(BAL):
     """
-    Memory-friendly Offline BAL implementation.
+    Offline (pool-based) BAL implementation.
+
+    Samples candidates RANDOMLY straight from the real pool (reservoir sampling),
+    so each candidate already carries its true fluxes. Selected candidates are
+    matched back to their full ky-spectra via an EXACT SHA1-hash lookup
+    (`lookup_real_samples`) -- no KNN, no `knn_max_std` filter. Selected via
+    `bal.sampling_mode=offline` (the default). The synthetic query-synthesis
+    counterpart is `Online` (JSON generation + KNN lookup).
 
     Key changes:
     - Do NOT materialize the whole pool into a list. Keep it lazy (indexable).
@@ -77,206 +76,178 @@ class Offline(BAL):
     @torch.no_grad()
     def sample_candidates(self, n_samples, dist_json_path=None, save_dir=None):
         """
-        JSON-driven candidate generator. Replaces the old reservoir-from-pool
-        sampler.
+        Reservoir sampler over the real pool (the pre-`4abc513` "old way").
 
-        Pipeline:
-          1. Read per-rho stats from `dist_json_path` (default: self.cfg.dist_json_path).
-          2. Draw `n_samples // n_rhos` physical (31-D) samples per rho via
-             generate_samples (truncated-Gaussian per feature).
-          3. For each physical draw, compute the ky grid with
-             compute_ky_matrix_skip_bad and emit ALL valid ky rows (not just
-             one). Result: a [N, 32] tensor of synthetic candidates with
-             N ≈ n_rhos * samples_per_rho * nky.
+        Draws up to `n_samples` unused (sample_idx, ky_idx) rows uniformly at
+        random from `self.pool_dataset` in a single streaming pass, then gathers
+        the chosen ky slices. Because every candidate is a genuine pool point it
+        already carries its true 4-channel flux, so NO synthetic generation and
+        NO post-acquisition KNN are needed.
 
-        Acquisition (EIG/MES/OW/etc.) is verified label-free for candidates,
-        so we don't attach real outputs here. Real outputs are looked up
-        post-acquisition via `lookup_real_samples` (K=1 KNN). The second
-        element of the returned tuple is zeros, kept for tuple-signature
-        compatibility with the old caller.
+        `dist_json_path` is accepted for signature compatibility but unused.
 
-        save_dir is used only as a working directory for the per-rho .npy
-        outputs of generate_samples; no candidates.h5 is written.
+        When `save_dir` is given, also writes `candidates.h5` there (real inputs
+        + ky + fluxes, in the sumf layout the dataloader re-derives). This file
+        is what `lookup_real_samples` hash-matches against, and -- because the
+        train dataloader globs all *.h5 in `train/` -- it is what the offline
+        EIG posterior retrain (`get_entropy`) trains on. `lookup_real_samples`
+        removes it afterwards so it never leaks into the next iteration's main
+        training loop.
+
+        Returns (final_candidates [N, 32], final_outputs [N, 4]) or None if the
+        pool has no unused entries.
         """
-        if dist_json_path is None:
-            dist_json_path = self.cfg.dist_json_path
+        os.makedirs(save_dir or ".", exist_ok=True)
+        save_path = os.path.join(save_dir, "candidates.h5") if save_dir else None
 
-        out_dir = Path(save_dir or ".") / "generated_candidates"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        with open(dist_json_path, "r") as f:
-            stats_by_rho = json.load(f)
-        rho_labels = sorted(stats_by_rho.keys(), key=lambda s: float(s))
-        n_rhos = len(rho_labels)
-        if n_rhos == 0:
-            return torch.empty((0, 32)), torch.empty((0, 4))
-
-        samples_per_rho = max(1, n_samples // n_rhos)
-        grad_r0 = getattr(self.cfg, "grad_r0", 1.23314445670738)
-        seed = getattr(self.cfg, "seed", 42)
-
-        generate_samples(dist_json_path, str(out_dir), n=samples_per_rho, seed=seed)
-
-        all_combined = []
-        for rho_label in rho_labels:
-            npy_path = out_dir / f"samples_rho_{rho_label}.npy"
-            if not npy_path.exists():
+        # Step 1: Reservoir sample indices (sample_idx, ky_idx) over UNUSED rows.
+        reservoir = []
+        total_unused = 0
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
+            inp = inp.detach().cpu()
+            nky = inp.shape[0]
+            if self.pool_tracker.is_used(inp[0]):
                 continue
-            data = load_npy_or_npz(str(npy_path))
-            ky_mat, inputs_kept, _, _ = compute_ky_matrix_skip_bad(data, grad_r0)
-            n_kept, nky = ky_mat.shape
-            if n_kept == 0:
+            for ky_idx in range(nky):
+                total_unused += 1
+                if len(reservoir) < n_samples:
+                    reservoir.append((sample_idx, ky_idx))
+                else:
+                    j = random.randrange(total_unused)
+                    if j < n_samples:
+                        reservoir[j] = (sample_idx, ky_idx)
+
+        if total_unused == 0:
+            return None
+
+        if len(reservoir) < n_samples:
+            print(f"WARNING: only {len(reservoir)} unused candidates available (requested {n_samples})")
+            n_samples = len(reservoir)
+
+        # Step 2: Group chosen ky indices by sample for a single gather pass.
+        sample_to_kys = defaultdict(list)
+        for s_idx, ky in reservoir:
+            sample_to_kys[s_idx].append(ky)
+
+        # Step 3: Second pass over selected samples only; gather + buffer for h5.
+        candidates, outputs = [], []
+        inputs_list, flux_list, mask_list, ky_list = [], [], [], []
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
+            if sample_idx not in sample_to_kys:
                 continue
-            # All-ky expansion: each physical sample emits nky rows.
-            inputs_exp = np.repeat(inputs_kept[:, None, :], nky, axis=1)  # [n_kept, nky, 31]
-            ky_exp = ky_mat[:, :, None]                                    # [n_kept, nky, 1]
-            combined = np.concatenate([inputs_exp, ky_exp], axis=2)        # [n_kept, nky, 32]
-            combined = combined.reshape(-1, 32)
-            # Drop rows with non-finite values (some ky entries can be NaN/inf).
-            finite_mask = np.isfinite(combined).all(axis=1)
-            all_combined.append(combined[finite_mask])
+            inp = inp.detach().cpu()
+            tflux = tflux.detach().cpu()
+            ky_indices = sample_to_kys[sample_idx]
 
-        if not all_combined:
-            return torch.empty((0, 32)), torch.empty((0, 4))
+            candidates.append(inp[ky_indices])
+            outputs.append(tflux[ky_indices])
 
-        candidates = torch.tensor(np.vstack(all_combined), dtype=torch.float32)
-        dummy_outputs = torch.zeros(candidates.shape[0], 4)
-        print(f"[Offline] Generated {candidates.shape[0]} synthetic candidates "
-              f"({n_rhos} rhos x {samples_per_rho} physical draws, all valid ky).")
+            if save_path is not None:
+                inp_np = inp.numpy()
+                inputs_list.append(inp_np)
+                flux_list.append(tflux.numpy())
+                mask_list.append(inp_np[:, -1] == 0)
+                ky_list.append(inp_np[:, -1])
 
+        final_candidates = torch.cat(candidates, dim=0)
+        final_outputs = torch.cat(outputs, dim=0)
+
+        # Step 4: Write candidates.h5 (real fluxes) in the sumf layout.
+        if save_path is not None:
+            dataset_cfg = self.run_cfg.dataset
+            inputs_arr = np.array(inputs_list)   # (n, nky, n_features)
+            flux_arr = np.array(flux_list)       # (n, nky, 4)
+            masks_arr = np.array(mask_list)
+            ky_arr = np.array(ky_list)
+            n_s, nky, _ = inputs_arr.shape
+
+            with h5py.File(save_path, "w") as h5f:
+                meta_grp = h5f.create_group("meta")
+                for i, key in enumerate(dataset_cfg.input_keys):
+                    h5f.create_dataset(key, data=inputs_arr[:, 0, i])
+                for key in dataset_cfg.spectra_function_keys:
+                    if key == "ky":
+                        h5f.create_dataset(key, data=ky_arr)
+
+                if len(dataset_cfg.intermediate_target_keys) > 0:
+                    ns, nf = 3, 2  # electrons + 2 ions, 2 fields
+                    sumf = np.zeros((n_s, nky, 2, nf, ns, 5))
+                    for slice_idx in range(2):
+                        sumf[:, :, slice_idx, 0, 0, 0] = flux_arr[:, :, 0] / nf
+                        sumf[:, :, slice_idx, 1, 0, 0] = flux_arr[:, :, 0] / nf
+                        sumf[:, :, slice_idx, 0, 0, 1] = flux_arr[:, :, 1] / nf
+                        sumf[:, :, slice_idx, 1, 0, 1] = flux_arr[:, :, 1] / nf
+                        q_ions = flux_arr[:, :, 2] / ((ns - 1) * nf)
+                        p_ions = flux_arr[:, :, 3] / ((ns - 1) * nf)
+                        for field_idx in range(nf):
+                            for ion_idx in range(1, ns):
+                                sumf[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
+                                sumf[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
+                    h5f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf)
+
+                meta_grp.create_dataset(dataset_cfg.mask_key, data=masks_arr.astype(np.bool_))
+                meta_grp.create_dataset("total_count", data=np.full((n_s,), nky, dtype=np.int32))
+
+            self._candidates_h5_path = save_path
+
+        print(f"[Offline] Reservoir-sampled {final_candidates.shape[0]} real pool rows "
+              f"from {total_unused} unused (requested {n_samples}).")
         gc.collect()
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-        return candidates, dummy_outputs
+        return final_candidates, final_outputs
 
+    def lookup_real_samples(self, acquired_candidates):
+        """Exact SHA1-hash lookup of each acquired row's first 31 columns into
+        the `candidates.h5` written by `sample_candidates` (the pre-`4abc513`
+        "old way", replacing the synthetic K=1 KNN).
 
-    def _build_knn_reference(self):
-        """Build a once-per-run [M, 31] reference of all real pool inputs and
-        a per-feature std normalization vector. Cached on the instance.
+        Because the acquired rows ARE genuine pool points, their physical
+        params hash exactly, so the match is deterministic -- there is no
+        nearest-neighbour approximation and no `knn_max_std` drop filter.
 
-        Normalization uses the JSON's per-feature std averaged across rhos
-        (the sampling distribution's scale), so KNN distance is invariant
-        to feature units.
+        Returns: list of length len(acquired_candidates), each element a tuple
+        (input_full [nky, 32], target_full [nky, 4]) -- same contract as the
+        Online KNN version -- or None if a row could not be matched.
+
+        Side effect: removes `candidates.h5` after reading, so it does not leak
+        into the next iteration's main-training glob of `train/`.
         """
-        if getattr(self, "_knn_ref_norm", None) is not None:
-            return
+        candidate_file = getattr(self, "_candidates_h5_path", None)
+        if candidate_file is None:
+            train_dir = os.path.join(self.dataset.cfg.dataset_root, "train")
+            candidate_file = os.path.join(train_dir, "candidates.h5")
 
-        input_keys = list(self.run_cfg.dataset.input_keys)
-        n_files = len(self.pool_dataset.file_list)
-        print(f"[Offline] Building KNN reference from pool ({n_files} file(s))...")
+        combined_matrix, target_flux_per_ky, lookup = self.read_h5_dataset(
+            candidate_file, self.run_cfg.dataset, build_index=True
+        )
 
-        ref_blocks = []
-        index_map = []  # (file_idx, sample_idx) per row
-        for file_idx, file_path in enumerate(self.pool_dataset.file_list):
-            with h5py.File(file_path, "r") as f:
-                cols = [np.array(f[k]) for k in input_keys]
-            arr = np.stack(cols, axis=1).astype(np.float32)  # [n, 31]
-            ref_blocks.append(arr)
-            for sample_idx in range(arr.shape[0]):
-                index_map.append((file_idx, sample_idx))
-        ref = np.vstack(ref_blocks)  # [M, 31]
+        out = [None] * len(acquired_candidates)
+        n_missing = 0
+        for j in range(len(acquired_candidates)):
+            arr = acquired_candidates[j][:31].detach().cpu().numpy().astype(np.float32)
+            key = hashlib.sha1(arr.tobytes()).hexdigest()
+            if key not in lookup:
+                n_missing += 1
+                continue
+            idx, _ = lookup[key]
+            out[j] = (torch.tensor(combined_matrix[idx], dtype=torch.float32),
+                      target_flux_per_ky[idx])
 
-        # Per-feature std from JSON, rho-averaged.
-        with open(self.cfg.dist_json_path, "r") as f:
-            stats = json.load(f)
-        rhos = list(stats.keys())
-        stds = np.zeros(len(input_keys), dtype=np.float32)
-        for fi, key in enumerate(input_keys):
-            stds[fi] = float(np.mean([stats[r][key]["std"] for r in rhos]))
-        self._knn_std = np.where(stds > 0, stds, 1.0).astype(np.float32)
-        self._knn_ref_norm = (ref / self._knn_std).astype(np.float32)
-        self._knn_index_map = index_map
-        print(f"[Offline] KNN reference ready: M={ref.shape[0]} rows.")
-
-    def lookup_real_samples(self, synthetic_candidates):
-        """K=1 nearest-neighbour lookup of each synthetic candidate's first
-        31 columns against the on-disk pool.
-
-        Returns: list of length len(synthetic_candidates), each element a
-        tuple (input_full [nky, 32], target_full [nky, 4]) -- the same
-        format that `find_in_dataset` used to return -- or None if the
-        match could not be loaded (should not happen in practice).
-        """
-        self._build_knn_reference()
-
-        syn_phys = synthetic_candidates[:, :31].detach().cpu().numpy().astype(np.float32)
-        syn_norm = (syn_phys / self._knn_std).astype(np.float32)
-
+        # Remove candidates.h5 so it doesn't pollute the next main-training glob.
         try:
-            from sklearn.neighbors import NearestNeighbors
-            nn = NearestNeighbors(n_neighbors=1, algorithm="auto")
-            nn.fit(self._knn_ref_norm)
-            distances, indices = nn.kneighbors(syn_norm)
-            best_idx = indices.ravel().astype(np.int64)
-            best_dist = distances.ravel().astype(np.float32)
-        except ImportError:
-            M = self._knn_ref_norm.shape[0]
-            B = syn_norm.shape[0]
-            ref_sq = (self._knn_ref_norm ** 2).sum(axis=1)
-            syn_sq = (syn_norm ** 2).sum(axis=1)
-            best_idx = np.zeros(B, dtype=np.int64)
-            best_dist = np.full(B, np.inf, dtype=np.float32)
-            chunk = 200_000
-            for start in range(0, M, chunk):
-                end = min(start + chunk, M)
-                ref_chunk = self._knn_ref_norm[start:end]
-                cross = syn_norm @ ref_chunk.T
-                d2 = syn_sq[:, None] + ref_sq[start:end][None, :] - 2.0 * cross
-                local_min = d2.min(axis=1)
-                local_argmin = d2.argmin(axis=1) + start
-                mask = local_min < best_dist
-                best_idx[mask] = local_argmin[mask]
-                best_dist[mask] = local_min[mask]
-            best_dist = np.sqrt(np.maximum(best_dist, 0.0)).astype(np.float32)
+            if os.path.exists(candidate_file):
+                os.remove(candidate_file)
+        except OSError:
+            pass
+        self._candidates_h5_path = None
 
-        # Per-pair, per-feature deltas in JSON-std units. Cached for callers.
-        matched_ref_norm = self._knn_ref_norm[best_idx]
-        delta_norm = (syn_norm - matched_ref_norm).astype(np.float32)
-        self._last_knn_delta_norm = delta_norm
-        self._last_knn_distances = best_dist
-        self._last_knn_indices = best_idx
-
-        # Drop mask: drop a candidate if its nearest real point is too far on
-        # ANY single feature -- the per-feature max (L-inf) gate. Each feature is
-        # already in units of its own JSON-std (syn_norm = phys / std above), so
-        # knn_max_std is "max # of stds off, on any one of the 31 features."
-        max_feat_delta = np.abs(delta_norm).max(axis=1)
-        knn_max_std = float(getattr(self.cfg, "knn_max_std", 1.63))
-        drop_mask = max_feat_delta > knn_max_std
-
-        # Distance summary (per-feature L-inf delta; ~1 means "one JSON-std off
-        # on the worst feature" -- same scale as knn_max_std).
-        pcts = np.percentile(max_feat_delta, [50, 90, 95, 99, 100])
-        print(f"[Offline] KNN per-feature L-inf delta: "
-              f"min={max_feat_delta.min():.3f} median={pcts[0]:.3f} "
-              f"p90={pcts[1]:.3f} p95={pcts[2]:.3f} p99={pcts[3]:.3f} "
-              f"max={pcts[4]:.3f}")
-        input_keys = list(self.run_cfg.dataset.input_keys)
-        mean_abs = np.mean(np.abs(delta_norm), axis=0)
-        worst = np.argsort(mean_abs)[::-1][:5]
-        print("[Offline] top-5 features by mean |delta| (JSON-std units):")
-        for i in worst:
-            print(f"   {input_keys[i]:>15s}: {mean_abs[i]:.3f}")
-
-        # Group matches by file for efficient lazy loading.
-        matches_by_file = defaultdict(list)
-        for j, ref_row in enumerate(best_idx):
-            file_idx, sample_idx = self._knn_index_map[int(ref_row)]
-            matches_by_file[file_idx].append((sample_idx, j))
-
-        out = [None] * len(best_idx)
-        for file_idx, hits in matches_by_file.items():
-            file_samples = self.pool_dataset._load_file_lazy(file_idx)
-            for sample_idx, j in hits:
-                if drop_mask[j]:
-                    continue  # nearest real point too far (per-feature L-inf)
-                out[j] = file_samples[sample_idx]
-
-        n_dropped = int(drop_mask.sum())
-        n_unique = len(set(int(i) for i in best_idx))
-        print(f"[Offline] KNN: {len(best_idx)} synthetic -> {n_unique} unique "
-              f"real points ({len(best_idx) - n_unique} collisions); "
-              f"dropped {n_dropped} (L-inf >{knn_max_std}).")
+        n_unique = len(set(
+            hashlib.sha1(acquired_candidates[j][:31].detach().cpu().numpy().astype(np.float32).tobytes()).hexdigest()
+            for j in range(len(acquired_candidates))
+        ))
+        print(f"[Offline] Exact-hash lookup: {len(acquired_candidates)} acquired -> "
+              f"{n_unique} unique physical points; {n_missing} unmatched (no filter).")
         return out
 
     def make_hash(self, input_tensor):

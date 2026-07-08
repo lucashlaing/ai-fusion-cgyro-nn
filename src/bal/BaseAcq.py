@@ -645,8 +645,37 @@ class BaseAcquisitionStrategy:
     
     def get_entropy(self, trainer, data_tuple):
         inputs, predictions_per_ky = data_tuple
-        candidates, predictions_per_ky, mask = self.regroup_datapoints(inputs, predictions_per_ky)
         dataset_cfg = self.dataset.cfg
+
+        # OFFLINE (pool) mode: the real candidates already live in `train/` as
+        # `candidates.h5` (written by Offline.sample_candidates, with true
+        # fluxes), and the train dataloader globs all *.h5 there. So we do NOT
+        # fabricate a pseudo-target temp file -- we just retrain over `train/`
+        # (real train data + real candidates) and re-predict. This is the
+        # pre-`29f2339` path; the pseudo-target write below is ONLY for the
+        # synthetic (online) regime, whose candidates never reach `train/`.
+        if self.cfg.get("sampling_mode", "offline") == "offline":
+            new_dataset = Spectra_Regularization_DataPipe(
+                dataset_cfg,
+                getattr(self.run_cfg, 'dataset_workers', 1),
+                getattr(self.run_cfg, 'base_seed', 42),
+                "train"
+            )
+            trainer_class = type(trainer)
+            new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
+            train_loader = DataLoader(
+                new_dataset,
+                batch_size=self.run_cfg.batch,
+                num_workers=getattr(self.run_cfg, 'dataset_workers', 1),
+                pin_memory=True,
+                collate_fn=self.ragged_collate,
+            )
+            train_looper = InfiniteDataLooper(train_loader)
+            for step in range(getattr(self.cfg, 'entropy_training_steps', 1000)):
+                new_trainer.iter(next(train_looper))
+            return self.get_prediction(inputs, new_trainer.model)
+
+        candidates, predictions_per_ky, mask = self.regroup_datapoints(inputs, predictions_per_ky)
         input_path = os.path.join(dataset_cfg.dataset_root, "train")
         temp_h5_path = os.path.join(input_path, "temp_entropy_data.h5")
 
