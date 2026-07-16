@@ -78,6 +78,16 @@ the three tables below.
 | `strat_eig_pflip` | Uniform-EIG-P-Flip | Uniform | EIG (ranked) | P-Flip |
 | `glo_uni_ow` | UniBin-Uniform-Importance | UniBin | Uniform | Importance |
 | `strat_rank_ow` | Uniform-Ranked-Importance | Uniform | Ranked | Importance |
+| `glo_uni_pflip` | UniBin-Uniform-P-Flip | UniBin | Uniform | P-Flip |
+| `strat_uni_ow` | Uniform-Uniform-Importance | Uniform | Uniform | Importance |
+| `strat_uni_eig` | Uniform-Uniform-EIG | Uniform | Uniform | EIG |
+| `strat_rank_ran` | Uniform-EIG-Random | Uniform | EIG (ranked) | Random |
+| `res_uni_ow` | Deviation-Uniform-Importance | Deviation | Uniform | Importance |
+| `res_uni_eig` | Deviation-Uniform-EIG | Deviation | Uniform | EIG |
+| `res_rank_ran` | Deviation-EIG-Random | Deviation | EIG (ranked) | Random |
+| `res_rank_pflip` | Deviation-EIG-P-Flip | Deviation | EIG (ranked) | P-Flip |
+| `res_rank_ow` | Deviation-Ranked-Importance | Deviation | Ranked | Importance |
+| `res_rank_eig` | Deviation-EIG-EIG | Deviation | EIG (ranked) | EIG |
 
 ---
 

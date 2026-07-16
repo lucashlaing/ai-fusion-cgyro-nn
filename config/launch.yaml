@@ -391,6 +391,52 @@ model:
       _peak_lr: 1e-3
       _weight_decay: 1e-5
       _epochs: 16
+  # redo of the two pool-ablation runs that died (eig_stratified errored, glo_uni_ow crashed@13)
+  bal-pool-ablation-redo:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.sampling_mode=offline bal.continuous_retrain=false bal.initial_training_size=20000 bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['eig_stratified', 'glo_uni_ow']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
+  # pool sampling + continued (warm-start) training -- reproduce the old data-efficient behavior
+  bal-pool-continuous:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.sampling_mode=offline bal.continuous_retrain=true bal.initial_training_size=20000 bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['random', 'eig']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
+  # the other 8 acqs under the same offline-pool + continuous_retrain=true config
+  # (random + eig already launched separately) -> completes the 10-curve graph
+  bal-pool-continuous-rest:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.sampling_mode=offline bal.continuous_retrain=true bal.initial_training_size=20000 bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['eig_stratified', 'res_uni_pflip', 'res_uni_ran', 'strat_uni_ran', 'strat_uni_pflip', 'strat_eig_pflip', 'glo_uni_ow', 'strat_rank_ow']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
   bal-abstracted-acq-strat_uni_pflip:
     command: >-
       [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> checkpoint_path='./checkpoints/model_bal_latest.pth';
@@ -518,7 +564,25 @@ model:
       _end_lr: 1e-5
       _peak_lr: 1e-3
       _weight_decay: 1e-5
+  # grid-completion: the 10 missing Separate x Budget x Select combos, under the
+  # same offline-pool + continuous_retrain=true recipe as bal-pool-continuous.
+  # Includes the get_entropy deepcopy fix (EIG retrain no longer mutates the
+  # live model), so EIG-flavored runs here are post-fix.
+  bal-pool-combos-continuous:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.sampling_mode=offline bal.continuous_retrain=true bal.initial_training_size=20000 bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 16
+    ephemeral_storage: 500
+    hparam:
+      _acq_func: ['glo_uni_pflip', 'strat_uni_ow', 'strat_uni_eig', 'strat_rank_ran', 'res_uni_ow', 'res_uni_eig', 'res_rank_ran', 'res_rank_pflip', 'res_rank_ow', 'res_rank_eig']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
 
 
 run:
-  model: [bal-acq-sweep-continuous]
+  model: [bal-pool-combos-continuous]

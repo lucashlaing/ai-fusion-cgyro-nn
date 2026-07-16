@@ -3,6 +3,7 @@ import numpy as np
 import time
 import hashlib
 import os
+import copy
 import h5py
 from torch.utils.data import DataLoader
 from dataset import Spectra_Regularization_DataPipe
@@ -178,10 +179,13 @@ class BaseAcquisitionStrategy:
             }
         return subsets
 
-    def _separate_residual_classes(self, candidates, trainer, lowerModel, num_classes=5, **kwargs):
+    def _separate_residual_classes(self, candidates, trainer, lowerModel, num_classes=5, score_func=None, **kwargs):
         """
         Separates candidates into 'classes' based on Z-score of residuals (Gaussian/DIRECT style).
         Calculates Z-scores here and passes them in metadata.
+        If `score_func` is provided (e.g. EIG/OW), calculates it for everyone and
+        attaches per-class 'scores' + 'rank_score' (enables ranked budgeting /
+        top-score selection, mirroring _separate_stratified_residual).
         """
         # 1. Get Predictions + residuals
         
@@ -205,6 +209,12 @@ class BaseAcquisitionStrategy:
         labels = torch.floor(torch.abs(z_scores))
         labels = torch.clamp(labels, min=0, max=num_classes - 1).long()
 
+        # Optional evaluation metric (EIG/OW) for ranked budgeting / top-score
+        # selection, computed once over all candidates.
+        all_scores = None
+        if score_func is not None:
+            all_scores, _ = score_func(candidates, trainer)
+
         subsets = {}
         for k in range(num_classes):
             class_mask = (labels == k)
@@ -212,13 +222,19 @@ class BaseAcquisitionStrategy:
             if indices.dim() == 0 and indices.numel() == 1: indices = indices.unsqueeze(0)
             if indices.numel() == 0: continue
 
+            metadata = {
+                'z_scores': z_scores[indices],
+                'std': residual_std[indices],
+                'class_id': k
+            }
+            if all_scores is not None:
+                class_scores = all_scores[indices]
+                metadata['scores'] = class_scores
+                metadata['rank_score'] = class_scores.sum().item()
+
             subsets[k] = {
                 'indices': indices,
-                'metadata': {
-                    'z_scores': z_scores[indices],
-                    'std': residual_std[indices],
-                    'class_id': k
-                }
+                'metadata': metadata
             }
         return subsets
 
@@ -351,8 +367,13 @@ class BaseAcquisitionStrategy:
         """
         scores = kwargs.get('scores')
         if scores is None:
-            print("[BAL] _select_top_score: 'scores' missing. Calculating fallback EIG...")
-            scores, _ = self._compute_eig_score(candidates, trainer)
+            score_func = kwargs.get('score_func')
+            if score_func is not None:
+                print("[BAL] _select_top_score: 'scores' missing. Calculating from score_func...")
+                scores, _ = score_func(candidates, trainer)
+            else:
+                print("[BAL] _select_top_score: 'scores' missing. Calculating fallback EIG...")
+                scores, _ = self._compute_eig_score(candidates, trainer)
 
         # Sort based on score
         _, sorted_indices = torch.sort(scores, descending=True)
@@ -373,23 +394,25 @@ class BaseAcquisitionStrategy:
         QoI = the same residual the strata are built from: the squared
         asinh-deviation of the model's prediction from the cheap base model,
         summed over output channels, evaluated per MC-dropout pass. This gives a
-        1-D predictive distribution per candidate: mean `mu`, std `sigma`. Within
-        this stratum the residual occupies a band [lo, hi] (robust quantiles of
-        mu). The flip probability is the predictive mass that lands OUTSIDE that
-        band -- the chance the candidate's residual would put it in a neighbouring
-        stratum:
+        1-D predictive distribution per candidate: mean `mu`, std `sigma`.
 
-            p_flip = 1 - [ Phi((hi - mu)/sigma) - Phi((lo - mu)/sigma) ]
+        The residual is non-negative and right-skewed (a sum of squared
+        asinh-deviations -> one-sided), so the only meaningful boundary is the
+        UPPER edge `hi` (robust 98% quantile of mu): a candidate "flips" when its
+        residual exceeds `hi` and lands in a higher-residual stratum. There is no
+        meaningful flip DOWN toward zero, so we take the upper-tail mass only:
 
-        p_flip is high when a candidate sits at the edge of the stratum's
+            p_flip = 1 - F(hi) = P(residual > hi)
+
+        p_flip is high when a candidate sits at the top edge of the stratum's
         residual band AND the model is uncertain (large sigma) -- the points
-        whose stratum membership could flip, which are the most informative for
-        pinning the boundary. We take the top `budget` by p_flip.
+        whose stratum membership could flip up, which are the most informative
+        for pinning the boundary. We take the top `budget` by p_flip.
 
-        Using the residual (not raw output) keeps the QoI consistent with how the
-        strata are defined. The residual is non-negative/right-skewed, so the
-        Gaussian (Phi) flip mass is an approximation; swap to the empirical
-        across-pass fraction for a distribution-free version.
+        F is the CDF of a Gamma(shape k, rate beta) fit to (mu, sigma) by
+        moments. A sum-of-squared-Gaussians is (non-central) chi-squared, well
+        captured by a Gamma; unlike a Gaussian it respects the hard floor at 0
+        and the right-skew (which mattered most in the low-residual strata).
         """
         # 1. Residual QoI distribution per candidate from MC dropout -- matches
         #    the stratification metric (squared asinh-deviation from base).
@@ -397,16 +420,23 @@ class BaseAcquisitionStrategy:
         base  = torch.asinh(self.get_prediction(candidates, lowerModel))     # [T, n, ...]
         resid = ((preds - base) ** 2).flatten(2).sum(dim=2)                  # [T, n] residual/pass
         mu    = resid.mean(dim=0)                                            # [n]
-        sigma = resid.std(dim=0) + 1e-9                                      # [n]
+        # floor the STD (not var): residual scale spans ~O(1) in the high
+        # stratum down to ~1e-13 in the low one, so a fixed var floor (1e-12)
+        # would swamp the true variance there and wreck the moment fit.
+        var   = (resid.std(dim=0) + 1e-9) ** 2                               # [n]
 
-        # 2. This stratum's residual band edges (robust to outliers).
-        lo = torch.quantile(mu, 0.02)
-        hi = torch.quantile(mu, 0.98)
+        # 2. This stratum's UPPER residual boundary (robust to outliers). The
+        #    distribution is one-sided, so there is no lower edge to flip past.
+        hi = torch.quantile(mu, 0.98).clamp_min(0.0)
 
-        # 3. Flip probability = predictive mass outside [lo, hi] under N(mu, sigma).
-        normal = torch.distributions.Normal(0.0, 1.0)
-        p_stay = normal.cdf((hi - mu) / sigma) - normal.cdf((lo - mu) / sigma)
-        p_flip = (1.0 - p_stay).clamp(0.0, 1.0)
+        # 3. Flip probability = upper-tail mass P(residual > hi) under a Gamma
+        #    fit to (mu, var) by moments:  k = mu^2/var,  rate beta = mu/var.
+        #    Gamma CDF at x is the regularized lower incomplete gamma P(k, beta*x)
+        #    = torch.special.gammainc(k, beta*x) -- version-robust, no host sync.
+        k    = (mu ** 2) / var                                              # shape
+        beta = mu / var                                                     # rate = 1/scale
+        cdf_hi = torch.special.gammainc(k, beta * hi)
+        p_flip = (1.0 - cdf_hi).clamp(0.0, 1.0)
         p_flip = torch.nan_to_num(p_flip, nan=0.0)
 
         _, sorted_indices = torch.sort(p_flip, descending=True)
@@ -662,7 +692,9 @@ class BaseAcquisitionStrategy:
                 "train"
             )
             trainer_class = type(trainer)
-            new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
+            # deepcopy: the entropy retrain must NOT mutate the live acquisition
+            # model (passing by reference corrupted warm-start/continuous runs).
+            new_trainer = trainer_class(copy.deepcopy(trainer.model), trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
             train_loader = DataLoader(
                 new_dataset,
                 batch_size=self.run_cfg.batch,
@@ -741,7 +773,9 @@ class BaseAcquisitionStrategy:
             )
 
             trainer_class = type(trainer)
-            new_trainer = trainer_class(trainer.model, trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
+            # deepcopy: the entropy retrain must NOT mutate the live acquisition
+            # model (passing by reference corrupted warm-start/continuous runs).
+            new_trainer = trainer_class(copy.deepcopy(trainer.model), trainer.model_cfg, trainer.opt_cfg, trainer.dataset_cfg, trainer.tc_rng)
 
             train_loader = DataLoader(
                 new_dataset,

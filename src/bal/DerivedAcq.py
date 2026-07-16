@@ -168,6 +168,169 @@ class StratRankOW(BaseAcquisitionStrategy):
         )
 
 
+class GloUniPFlip(BaseAcquisitionStrategy):
+    """Global pool + p_flip boundary selection (band over the whole pool)."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Global Separation, Uniform Budgeting, P-Flip Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_global,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_p_flip,
+        )
+
+
+class StratUniOW(BaseAcquisitionStrategy):
+    """Residual strata + uniform budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, Uniform Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+        )
+
+
+class StratUniEIG(BaseAcquisitionStrategy):
+    """Residual strata + uniform budget + top EIG selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, Uniform Budgeting, EIG Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_eig_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+        )
+
+
+class StratRankRan(BaseAcquisitionStrategy):
+    """Residual strata + EIG-ranked budget + random selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, EIG-Ranked Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_random,
+            score_func=self._compute_eig_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class ResUniOW(BaseAcquisitionStrategy):
+    """Residual classes + uniform budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, Uniform Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+        )
+
+
+class ResUniEIG(BaseAcquisitionStrategy):
+    """Residual classes + uniform budget + top EIG selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, Uniform Budgeting, EIG Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_eig_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+        )
+
+
+class ResRankRan(BaseAcquisitionStrategy):
+    """Residual classes + EIG-ranked budget + random selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, EIG-Ranked Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_random,
+            score_func=self._compute_eig_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class ResRankPFlip(BaseAcquisitionStrategy):
+    """Residual classes + EIG-ranked budget + p_flip boundary selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, EIG-Ranked Budgeting, P-Flip Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_p_flip,
+            score_func=self._compute_eig_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class ResRankOW(BaseAcquisitionStrategy):
+    """Residual classes + OW-ranked budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, OW-Ranked Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class ResRankEIG(BaseAcquisitionStrategy):
+    """Residual classes + EIG-ranked budget + top EIG selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, EIG-Ranked Budgeting, EIG Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_top_score,
+            score_func=self._compute_eig_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
 STRATEGY_HANDLER = {
     "random": RandomStrategy,
     "eig": EIGStrategy,
@@ -180,4 +343,15 @@ STRATEGY_HANDLER = {
     "strat_eig_pflip": StratEIGPFlip,
     "glo_uni_ow": GloUniOW,
     "strat_rank_ow": StratRankOW,
+    # --- grid-completion combos (the 10 missing Separate x Budget x Select) ---
+    "glo_uni_pflip": GloUniPFlip,
+    "strat_uni_ow": StratUniOW,
+    "strat_uni_eig": StratUniEIG,
+    "strat_rank_ran": StratRankRan,
+    "res_uni_ow": ResUniOW,
+    "res_uni_eig": ResUniEIG,
+    "res_rank_ran": ResRankRan,
+    "res_rank_pflip": ResRankPFlip,
+    "res_rank_ow": ResRankOW,
+    "res_rank_eig": ResRankEIG,
 }
