@@ -8,8 +8,8 @@ candidates ──▶ 1. SEPARATE ──▶ 2. BUDGET ──▶ 3. SELECT ──�
 ```
 
 The plot labels in `test/plot_plot.py` use a **3-word name** with one word per
-step: **`Separate-Budget-Select`**. So **`UniBin-Ranked-Importance`** =
-`SEPARATE=UniBin`, `BUDGET=Ranked`, `SELECT=Importance`. Look each word up in
+step: **`Separate-Budget-Select`**. So **`Uniform-Ranked-Importance`** =
+`SEPARATE=Uniform`, `BUDGET=Ranked`, `SELECT=Importance`. Look each word up in
 the three tables below.
 
 > The raw config keys (`strat_rank_ow`, etc.) use abbreviations; the **plot
@@ -21,8 +21,8 @@ the three tables below.
 
 | Plot word | Key token | Function | What it does |
 |-----------|-----------|----------|--------------|
-| **Uniform** | `random`/`eig`/`direct`/`glo` | `_separate_global` | No partitioning — all candidates in one flat global pool. |
-| **UniBin** | `strat` | `_separate_stratified_residual` | Sort by **residual** (current-model error vs. cheap base model), split into `num_strata` equal-size bins. Bin 0 = highest error. |
+| **UniBin** | `random`/`eig`/`direct`/`glo` | `_separate_global` | No partitioning — all candidates in **one** flat global bin. |
+| **Uniform** | `strat` | `_separate_stratified_residual` | Sort by **residual** (current-model error vs. cheap base model), split into `num_strata` **uniform (equal-size)** bins. Bin 0 = highest error. |
 | **Deviation** | `res` | `_separate_residual_classes` | Group by **Z-score class** of the residual (how many std-devs a candidate's error is from the mean error). |
 
 ---
@@ -67,24 +67,24 @@ the three tables below.
 
 | Config key | Plot name | Separate | Budget | Select |
 |------------|-----------|----------|--------|--------|
-| `random` | Uniform-Uniform-Random | Uniform | Uniform | Random |
-| `eig` | Uniform-Uniform-EIG | Uniform | Uniform | EIG |
-| `eig_stratified` | UniBin-Ranked-EIG | UniBin | Ranked | EIG |
-| `direct` | Uniform-Uniform-DIRECT | Uniform | Uniform | DIRECT |
+| `random` | UniBin-Uniform-Random | UniBin | Uniform | Random |
+| `eig` | UniBin-Uniform-EIG | UniBin | Uniform | EIG |
+| `eig_stratified` | Uniform-Ranked-EIG | Uniform | Ranked | EIG |
+| `direct` | UniBin-Uniform-DIRECT | UniBin | Uniform | DIRECT |
 | `res_uni_ran` | Deviation-Uniform-Random | Deviation | Uniform | Random |
 | `res_uni_pflip` | Deviation-Uniform-P-Flip | Deviation | Uniform | P-Flip |
-| `strat_uni_ran` | UniBin-Uniform-Random | UniBin | Uniform | Random |
-| `strat_uni_pflip` | UniBin-Uniform-P-Flip | UniBin | Uniform | P-Flip |
-| `strat_eig_pflip` | UniBin-EIG-P-Flip | UniBin | EIG (ranked) | P-Flip |
-| `glo_uni_ow` | Uniform-Uniform-Importance | Uniform | Uniform | Importance |
-| `strat_rank_ow` | UniBin-Ranked-Importance | UniBin | Ranked | Importance |
+| `strat_uni_ran` | Uniform-Uniform-Random | Uniform | Uniform | Random |
+| `strat_uni_pflip` | Uniform-Uniform-P-Flip | Uniform | Uniform | P-Flip |
+| `strat_eig_pflip` | Uniform-EIG-P-Flip | Uniform | EIG (ranked) | P-Flip |
+| `glo_uni_ow` | UniBin-Uniform-Importance | UniBin | Uniform | Importance |
+| `strat_rank_ow` | Uniform-Ranked-Importance | Uniform | Ranked | Importance |
 
 ---
 
 ## Worked example
 
-**`UniBin-Uniform-Random`** (key `strat_uni_ran`):
-1. **UniBin** — bin candidates by residual error into equal-size bands.
+**`Uniform-Uniform-Random`** (key `strat_uni_ran`):
+1. **Uniform** — bin candidates by residual error into equal-size (uniform) bands.
 2. **Uniform** — even budget per band.
 3. **Random** — pick randomly within each band's budget.
 
@@ -92,6 +92,6 @@ the three tables below.
 
 ### Notes
 - **`pflip`** is the boundary-refinement selector (`_select_p_flip`).
-- Step 1 `Uniform` covers both the bare strategies (`random`/`eig`/`direct`) and
-  the `glo_*` family — all one global pool. Step 2 `Ranked` is the single word
-  for `_budget_ranked_weights`.
+- Step 1 `UniBin` ("**one** bin") covers both the bare strategies
+  (`random`/`eig`/`direct`) and the `glo_*` family — all one global pool.
+  Step 2 `Ranked` is the single word for `_budget_ranked_weights`.
