@@ -213,11 +213,7 @@ def run_train(cfg):
         set_seed(round_seed)
         tc_rng.manual_seed(round_seed)
 
-        # Reset to baseline so this iteration trains from scratch on the grown
-        # dataset -- unless continuous_retrain is set, in which case we warm-start
-        # from the previous iteration's weights (continual finetuning). The
-        # optimizer/LR schedule are still rebuilt per iteration below, so each
-        # iteration is a cosine warm-restart on top of the carried-over weights.
+        # whether continuous retrain or restart from base checkpoint
         if not cfg.bal.get("continuous_retrain", False):
             model.load_state_dict(initial_model_state)
 

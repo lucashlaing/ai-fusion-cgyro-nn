@@ -49,11 +49,41 @@ class Spectra_Pool_Dataset(Dataset):
                 print(f"  Loading file {file_idx+1}/{len(self.file_list)}: {file_path}")
                 file_samples = self._load_file(file_path)
                 self.file_data[file_idx] = file_samples
-                
+
                 for sample_idx in range(len(file_samples)):
                     self.index.append((file_idx, sample_idx))
-        
+
         print(f"Dataset ready: {len(self.index)} total samples across {len(self.file_list)} files")
+
+        # Per-sample `rho` label, aligned 1:1 with self.index (same file/sample
+        # order used by __getitem__). Used by Offline.sample_candidates for
+        # rho-balanced candidate picking. Cheap: one float per sample. Left as
+        # None (with a warning) if the h5s predate the `rho` key -- callers must
+        # fall back to unbalanced sampling in that case.
+        self.rho_index = self._build_rho_index()
+
+    def _build_rho_index(self):
+        """Read the discrete `rho` label for every sample, in global index order.
+
+        Returns a float ndarray of shape (len(self.index),), or None if any file
+        lacks the `rho` dataset (added by test/add_rho_key.py). Iterates
+        self.file_list in the same order self.index was built, so
+        rho_index[global_idx] matches self[global_idx].
+        """
+        rho_parts = []
+        for file_path in self.file_list:
+            with h5py.File(file_path, "r") as f:
+                if "rho" not in f:
+                    print(f"WARNING: 'rho' key missing in {file_path}; "
+                          f"rho_index disabled (rho-balanced sampling unavailable).")
+                    return None
+                rho_parts.append(np.asarray(f["rho"][:], dtype=np.float64).ravel())
+        rho_index = np.concatenate(rho_parts) if rho_parts else np.empty(0)
+        if len(rho_index) != len(self.index):
+            print(f"WARNING: rho count ({len(rho_index)}) != sample count "
+                  f"({len(self.index)}); rho_index disabled.")
+            return None
+        return rho_index
 
     def _load_file(self, file_path):
         """

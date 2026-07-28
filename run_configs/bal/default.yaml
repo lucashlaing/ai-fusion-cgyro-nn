@@ -3,6 +3,7 @@ initial_training_size: 20000 # offline: real target (no KNN survival). online as
 acquisition_function: random # in [random, eig, eig_stratified, direct, res_uni_ran, res_uni_pflip, strat_uni_ran, strat_uni_pflip, strat_eig_pflip, glo_uni_ow, strat_rank_ow]
 n_samples: 200000
 new_sample_size: 10000 # offline: ~= actual acquired/iter (only dup drop, no ~0.33 KNN survival)
+rho_balanced: true # offline-only: draw candidates evenly across the 9 rho strata (0.1..0.9) via water-filling quota, instead of a uniform reservoir. Falls back to uniform if pool lacks the `rho` key. false = old uniform behaviour.
 entropy_training_steps: 100
 model_count: 16
 dist_json_path: './src/utils/mean_std_with_rho.json'

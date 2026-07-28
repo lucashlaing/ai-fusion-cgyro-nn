@@ -13,6 +13,7 @@ hostname_blacklist:
  - fiona8.ucsc.edu
  - k8s-chase-ci-05.calit2.optiputer.net
  - k8s-chase-ci-04.calit2.optiputer.net
+ - uicnrp-fiona.evl.uic.edu  # dead GPU: ERROR_GPU_IS_LOST (UnexpectedAdmissionError), 2026-07-23
 
 hostname_whitelist:
   - gpu-02.csusb.edu

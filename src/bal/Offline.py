@@ -100,22 +100,18 @@ class Offline(BAL):
         os.makedirs(save_dir or ".", exist_ok=True)
         save_path = os.path.join(save_dir, "candidates.h5") if save_dir else None
 
-        # Step 1: Reservoir sample indices (sample_idx, ky_idx) over UNUSED rows.
-        reservoir = []
-        total_unused = 0
-        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
-            inp = inp.detach().cpu()
-            nky = inp.shape[0]
-            if self.pool_tracker.is_used(inp[0]):
-                continue
-            for ky_idx in range(nky):
-                total_unused += 1
-                if len(reservoir) < n_samples:
-                    reservoir.append((sample_idx, ky_idx))
-                else:
-                    j = random.randrange(total_unused)
-                    if j < n_samples:
-                        reservoir[j] = (sample_idx, ky_idx)
+        # Step 1: Reservoir-sample (sample_idx, ky_idx) index pairs over UNUSED
+        # rows -- either uniformly (old behaviour) or evenly across the 9 rho
+        # strata (bal.rho_balanced, default True) when the pool exposes `rho`.
+        rho_index = getattr(self.pool_dataset, "rho_index", None)
+        want_balanced = bool(self.cfg.get("rho_balanced", True))
+        if want_balanced and rho_index is None:
+            print("[Offline] rho_balanced=True but pool has no rho_index; "
+                  "falling back to uniform reservoir sampling.")
+        if want_balanced and rho_index is not None:
+            reservoir, total_unused = self._reservoir_rho_balanced(n_samples, rho_index)
+        else:
+            reservoir, total_unused = self._reservoir_uniform(n_samples)
 
         if total_unused == 0:
             return None
@@ -196,6 +192,120 @@ class Offline(BAL):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         return final_candidates, final_outputs
+
+    # ---- rho-balanced candidate picking -------------------------------------
+    # Canonical discrete rho labels (see test/add_rho_key.py): 0.1 .. 0.9,
+    # mapped to strata 0..8. The pool is heavily rho-imbalanced (rho=0.1 ~472k
+    # samples vs rho=0.9 ~71k), so a uniform reservoir under-samples the outer
+    # radii; balancing draws an equal share per rho instead.
+    RHO_N = 9
+
+    def _rho_stratum(self, rho_val):
+        """Map a discrete rho label (0.1..0.9) to a stratum index 0..8; -1 if off-grid."""
+        s = int(round(float(rho_val) * 10)) - 1
+        return s if 0 <= s < self.RHO_N else -1
+
+    @staticmethod
+    def _rho_balanced_quota(avail, total):
+        """Split `total` candidates as evenly as possible across strata, capped by
+        per-stratum availability (water-filling). Surplus demand from short strata
+        (e.g. the rare rho=0.9, or strata depleted late in a run) is redistributed
+        to strata that still have headroom, so the total candidate count is
+        preserved while staying as balanced as the pool allows. Returns an int
+        ndarray of per-stratum quotas summing to min(total, avail.sum())."""
+        avail = np.asarray(avail, dtype=np.int64)
+        quota = np.zeros_like(avail)
+        remaining = int(min(total, avail.sum()))
+        active = avail > 0
+        while remaining > 0 and active.any():
+            share = remaining // int(active.sum())
+            if share == 0:
+                # Hand out the final few one-by-one to strata with the most headroom.
+                headroom = np.where(active, avail - quota, 0)
+                for s in np.argsort(-headroom):
+                    if remaining == 0:
+                        break
+                    if headroom[s] > 0:
+                        quota[s] += 1
+                        remaining -= 1
+                break
+            for s in np.where(active)[0]:
+                take = int(min(share, avail[s] - quota[s]))
+                quota[s] += take
+                remaining -= take
+                if quota[s] >= avail[s]:
+                    active[s] = False
+        return quota
+
+    def _reservoir_uniform(self, n_samples):
+        """Uniform reservoir over all unused (sample_idx, ky_idx) rows.
+        Returns (reservoir, total_unused)."""
+        reservoir = []
+        total_unused = 0
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
+            inp = inp.detach().cpu()
+            nky = inp.shape[0]
+            if self.pool_tracker.is_used(inp[0]):
+                continue
+            for ky_idx in range(nky):
+                total_unused += 1
+                if len(reservoir) < n_samples:
+                    reservoir.append((sample_idx, ky_idx))
+                else:
+                    j = random.randrange(total_unused)
+                    if j < n_samples:
+                        reservoir[j] = (sample_idx, ky_idx)
+        return reservoir, total_unused
+
+    def _reservoir_rho_balanced(self, n_samples, rho_index):
+        """Reservoir that draws candidates evenly across the 9 rho strata.
+
+        Pass 1 (hashing) tags each unused sample with its stratum, respecting the
+        pool_tracker's used set; heavy pool tensors are touched exactly once here.
+        Pass 2 (index-only, no tensor access / no re-hash) fills a per-stratum
+        reservoir up to each stratum's water-filled quota. Returns
+        (reservoir, total_unused)."""
+        n = len(self.pool_dataset)
+        strata = np.full(n, -1, dtype=np.int8)
+        nky_arr = np.zeros(n, dtype=np.int32)
+        for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
+            if self.pool_tracker.is_used(inp[0]):
+                continue
+            s = self._rho_stratum(rho_index[sample_idx])
+            if s < 0:
+                continue
+            strata[sample_idx] = s
+            nky_arr[sample_idx] = inp.shape[0]
+
+        avail = np.array([int(nky_arr[strata == s].sum()) for s in range(self.RHO_N)],
+                         dtype=np.int64)
+        total_unused = int(avail.sum())
+        if total_unused == 0:
+            return [], 0
+
+        quota = self._rho_balanced_quota(avail, n_samples)
+
+        reservoirs = [[] for _ in range(self.RHO_N)]
+        seen = np.zeros(self.RHO_N, dtype=np.int64)
+        for sample_idx in range(n):
+            s = int(strata[sample_idx])
+            if s < 0 or quota[s] == 0:
+                continue
+            cap = int(quota[s])
+            res = reservoirs[s]
+            for ky_idx in range(int(nky_arr[sample_idx])):
+                seen[s] += 1
+                if len(res) < cap:
+                    res.append((sample_idx, ky_idx))
+                else:
+                    j = random.randrange(seen[s])
+                    if j < cap:
+                        res[j] = (sample_idx, ky_idx)
+
+        reservoir = [pair for res in reservoirs for pair in res]
+        print(f"[Offline] rho-balanced reservoir | per-rho(0.1..0.9) picked="
+              f"{[len(r) for r in reservoirs]} quota={quota.tolist()} avail={avail.tolist()}")
+        return reservoir, total_unused
 
     def lookup_real_samples(self, acquired_candidates):
         """Exact SHA1-hash lookup of each acquired row's first 31 columns into
