@@ -126,7 +126,11 @@ class Offline(BAL):
             sample_to_kys[s_idx].append(ky)
 
         # Step 3: Second pass over selected samples only; gather + buffer for h5.
+        # Also carry each row's SAVED discrete rho label (from the pool's
+        # rho_index, same source as rho-balanced sampling) so the rho-separated
+        # acquisitions group on it directly -- no re-derivation from RMIN_LOC.
         candidates, outputs = [], []
+        candidate_rho = [] if rho_index is not None else None
         inputs_list, flux_list, mask_list, ky_list = [], [], [], []
         for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
             if sample_idx not in sample_to_kys:
@@ -137,6 +141,9 @@ class Offline(BAL):
 
             candidates.append(inp[ky_indices])
             outputs.append(tflux[ky_indices])
+            if candidate_rho is not None:
+                # every ky row of this sample shares the sample's rho label
+                candidate_rho.extend([float(rho_index[sample_idx])] * len(ky_indices))
 
             if save_path is not None:
                 inp_np = inp.numpy()
@@ -147,6 +154,17 @@ class Offline(BAL):
 
         final_candidates = torch.cat(candidates, dim=0)
         final_outputs = torch.cat(outputs, dim=0)
+
+        # Attach the per-candidate saved rho label (row-aligned to
+        # final_candidates) onto the acquisition strategy, so `_separate_rho`
+        # reads the stored value instead of snapping RMIN_LOC. Cleared to None
+        # if rho is untracked, in which case _separate_rho falls back to RMIN_LOC.
+        strategy = getattr(self, "strategy", None)
+        if strategy is not None:
+            if candidate_rho is not None and len(candidate_rho) == final_candidates.shape[0]:
+                strategy._candidate_rho = torch.tensor(candidate_rho, dtype=torch.float32)
+            else:
+                strategy._candidate_rho = None
 
         # Step 4: Write candidates.h5 (real fluxes) in the sumf layout.
         if save_path is not None:

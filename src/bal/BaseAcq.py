@@ -238,6 +238,85 @@ class BaseAcquisitionStrategy:
             }
         return subsets
 
+    # Canonical discrete rho labels (0.1..0.9), mapped to strata 0..8. rho is
+    # SAVED in the dataset (test/add_rho_key.py adds the `rho` h5 key) and read
+    # per pool sample as `pool_dataset.rho_index` -- the same source the
+    # rho-balanced candidate sampler uses. `Offline.sample_candidates` attaches
+    # the per-candidate label as `strategy._candidate_rho`, so `_separate_rho`
+    # groups on the stored value; RMIN_LOC is only snapped as a fallback when
+    # that label was not tracked (e.g. online/synthetic candidates).
+    RHO_N = 9
+
+    def _separate_rho(self, candidates, trainer, lowerModel, score_func=None, **kwargs):
+        """
+        Separate candidates by RADIAL LOCATION (rho) into up to 9 strata
+        (rho 0.1..0.9 -> stratum idx 0..8), reading the SAVED discrete `rho`
+        label attached per candidate (`self._candidate_rho`, populated by
+        Offline.sample_candidates from the pool's `rho_index`). No re-derivation
+        from RMIN_LOC when the label is present.
+
+        Unlike the residual/stratified separators this partition is fixed by
+        geometry and does NOT depend on the current model -- it forces the
+        acquisition to spread across every radial band, countering the pool's
+        heavy rho imbalance (rho=0.1 ~472k rows vs rho=0.9 ~71k). Empty strata
+        (a band absent from this candidate batch) are simply skipped.
+
+        If `score_func` is provided (EIG/OW), it is computed once over all
+        candidates and split per-stratum into metadata ('scores' + 'rank_score'),
+        enabling ranked budgeting / top-score selection -- mirroring the other
+        score-aware separators.
+        """
+        rho = getattr(self, "_candidate_rho", None)
+        if rho is not None and len(rho) == len(candidates):
+            # Saved discrete rho label (0.1..0.9) -> stratum 0..8.
+            strata = torch.round(rho.detach().cpu().float() * 10).long() - 1
+        else:
+            # Fallback only: rho not tracked for these candidates (online /
+            # synthetic path, or legacy h5s without the `rho` key). Recover the
+            # band by snapping the raw RMIN_LOC input feature to its peak.
+            print("[BAL] _separate_rho: no saved candidate rho; snapping RMIN_LOC.")
+            strata = self._rho_from_rmin_loc(candidates)
+        strata = strata.clamp(0, self.RHO_N - 1)
+
+        all_scores = None
+        if score_func is not None:
+            all_scores, _ = score_func(candidates, trainer)
+
+        subsets = {}
+        for s in range(self.RHO_N):
+            class_mask = (strata == s)
+            indices = torch.nonzero(class_mask).squeeze()
+            if indices.dim() == 0 and indices.numel() == 1: indices = indices.unsqueeze(0)
+            if indices.numel() == 0: continue
+
+            metadata = {'rho_stratum': s}
+            if all_scores is not None:
+                stratum_scores = all_scores[indices]
+                metadata['scores'] = stratum_scores
+                metadata['rank_score'] = stratum_scores.sum().item()
+
+            subsets[s] = {
+                'indices': indices,
+                'metadata': metadata
+            }
+        return subsets
+
+    # Canonical radial peaks (test/add_rho_key.py): RMIN_LOC clusters at these 9
+    # radii -> rho 0.1..0.9. Only used by the _separate_rho fallback below.
+    RHO_PEAKS = [0.114, 0.231, 0.348, 0.463, 0.570, 0.670, 0.766, 0.857, 0.933]
+
+    def _rho_from_rmin_loc(self, candidates):
+        """Fallback rho stratum (0..8) by snapping the raw RMIN_LOC input feature
+        to its nearest canonical peak. Used only when a saved per-candidate rho
+        label is unavailable (see _separate_rho)."""
+        try:
+            col = list(self.run_cfg.dataset.input_keys).index("RMIN_LOC")
+        except (AttributeError, ValueError):
+            col = 15  # SiNN_local ordering
+        rmin = candidates[:, col].detach().cpu().float()
+        peaks = torch.tensor(self.RHO_PEAKS, dtype=rmin.dtype)
+        return (rmin.unsqueeze(1) - peaks.unsqueeze(0)).abs().argmin(dim=1)
+
     # =========================================================================
     #  Layer 2: Budgeting Strategies
     # =========================================================================

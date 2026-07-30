@@ -24,6 +24,7 @@ the three tables below.
 | **UniBin** | `random`/`eig`/`direct`/`glo` | `_separate_global` | No partitioning — all candidates in **one** flat global bin. |
 | **Uniform** | `strat` | `_separate_stratified_residual` | Sort by **residual** (current-model error vs. cheap base model), split into `num_strata` **uniform (equal-size)** bins. Bin 0 = highest error. |
 | **Deviation** | `res` | `_separate_residual_classes` | Group by **Z-score class** of the residual (how many std-devs a candidate's error is from the mean error). |
+| **Rho** | `rho` | `_separate_rho` | Group by **radial location**: reads the **saved discrete `rho` label** (dataset `rho` key → `pool_dataset.rho_index`, the same source rho-balanced sampling uses; attached per candidate by `Offline.sample_candidates`) → up to 9 rho strata (0.1..0.9). Model-independent (fixed by geometry); forces coverage across every radial band despite the pool's heavy rho imbalance. Falls back to snapping `RMIN_LOC` only when the label is untracked (online/synthetic candidates). |
 
 ---
 
@@ -88,6 +89,26 @@ the three tables below.
 | `res_rank_pflip` | Deviation-EIG-P-Flip | Deviation | EIG (ranked) | P-Flip |
 | `res_rank_ow` | Deviation-Ranked-Importance | Deviation | Ranked | Importance |
 | `res_rank_eig` | Deviation-EIG-EIG | Deviation | EIG (ranked) | EIG |
+| `rho_uni_ran` | Rho-Uniform-Random | Rho | Uniform | Random |
+| `rho_uni_pflip` | Rho-Uniform-P-Flip | Rho | Uniform | P-Flip |
+| `rho_uni_ow` | Rho-Uniform-Importance | Rho | Uniform | Importance |
+| `rho_uni_eig` | Rho-Uniform-EIG | Rho | Uniform | EIG |
+| `rho_rank_ran` | Rho-EIG-Random | Rho | EIG (ranked) | Random |
+| `rho_rank_pflip` | Rho-EIG-P-Flip | Rho | EIG (ranked) | P-Flip |
+| `rho_rank_ow` | Rho-Ranked-Importance | Rho | Ranked | Importance |
+| `rho_rank_eig` | Rho-EIG-EIG | Rho | EIG (ranked) | EIG |
+
+> **Rho family** (radial-band separator, added 2026-07-30): the 8
+> `rho_*` combos above are Rho × {Uniform, Ranked} budget × {Random, P-Flip,
+> Importance, EIG} select — the same 2×4 grid as the `res_*` / `strat_*`
+> families. `rho_rank_*` ranks strata by `_compute_eig_score` (or
+> `_compute_ow_score` for Importance) and reads `cfg.bal.strata_weights` exactly
+> like res_*/strat_*. Because there are up to 9 rho bands (vs 3 for
+> res_*/strat_*), **pass a 9-element `strata_weights` hyperparameter** when
+> running the ranked rho combos — a monotone-decreasing vector gives more budget
+> to higher-scoring bands while still covering all 9; the 3-element default
+> `[0.5,0.3,0.2]` would starve 6 of them. (`rho_uni_*` ignore `strata_weights`.)
+> See the `bal-rho-separator-sweep` block in `config/launch.yaml`.
 
 ---
 

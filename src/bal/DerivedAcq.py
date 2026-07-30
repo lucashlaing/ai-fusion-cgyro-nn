@@ -331,6 +331,138 @@ class ResRankEIG(BaseAcquisitionStrategy):
         )
 
 
+# =============================================================================
+#  Rho-separated family: SEPARATE=Rho (the saved discrete `rho` label carried
+#  per candidate; see BaseAcq._separate_rho) x BUDGET {Uniform, Ranked} x
+#  SELECT {Random, P-Flip, Importance, EIG}. Mirrors the complete res_* /
+#  strat_* families, but the partition is fixed by radial geometry instead of
+#  the current model's residual -- forcing coverage across every rho band.
+#  Ranked ('rho_rank_*') budgets by _compute_eig_score (or _compute_ow_score
+#  for Importance), same as res_rank_* / strat_rank_*.
+# =============================================================================
+
+class RhoUniRan(BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + random selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_random,
+        )
+
+
+class RhoUniPFlip(BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + p_flip boundary selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, P-Flip Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_p_flip,
+        )
+
+
+class RhoUniOW(BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+        )
+
+
+class RhoUniEIG(BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + top EIG selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, EIG Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_top_score,
+            score_func=self._compute_eig_score,
+        )
+
+
+class RhoRankRan(BaseAcquisitionStrategy):
+    """Rho strata + EIG-ranked budget + random selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, EIG-Ranked Budgeting, Random Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_random,
+            score_func=self._compute_eig_score,
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class RhoRankPFlip(BaseAcquisitionStrategy):
+    """Rho strata + EIG-ranked budget + p_flip boundary selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, EIG-Ranked Budgeting, P-Flip Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_p_flip,
+            score_func=self._compute_eig_score,
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class RhoRankOW(BaseAcquisitionStrategy):
+    """Rho strata + OW-ranked budget + top output-weighted selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, OW-Ranked Budgeting, Output-Weighted Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_top_score,
+            score_func=self._compute_ow_score,
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class RhoRankEIG(BaseAcquisitionStrategy):
+    """Rho strata + EIG-ranked budget + top EIG selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, EIG-Ranked Budgeting, EIG Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_top_score,
+            score_func=self._compute_eig_score,
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
 STRATEGY_HANDLER = {
     "random": RandomStrategy,
     "eig": EIGStrategy,
@@ -354,4 +486,13 @@ STRATEGY_HANDLER = {
     "res_rank_pflip": ResRankPFlip,
     "res_rank_ow": ResRankOW,
     "res_rank_eig": ResRankEIG,
+    # --- Rho separator (radial-band) x Budget {uni, rank} x Select {ran, pflip, ow, eig} ---
+    "rho_uni_ran": RhoUniRan,
+    "rho_uni_pflip": RhoUniPFlip,
+    "rho_uni_ow": RhoUniOW,
+    "rho_uni_eig": RhoUniEIG,
+    "rho_rank_ran": RhoRankRan,
+    "rho_rank_pflip": RhoRankPFlip,
+    "rho_rank_ow": RhoRankOW,
+    "rho_rank_eig": RhoRankEIG,
 }
