@@ -51,7 +51,7 @@ def main(cfg: DictConfig):
     print(f"2. Initializing DataLoader for New Data...")
     # Initialize the dataset pointing to your new H5
     # Note: Ensure cfg.dataset is configured to look at your generated h5 folder
-    test_datapipe = DATSET_HANDLER[cfg.project](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train", False)
+    test_datapipe = DATSET_HANDLER[cfg.project](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     
     test_loader = DataLoader(
         test_datapipe,

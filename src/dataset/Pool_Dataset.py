@@ -12,17 +12,15 @@ class Spectra_Pool_Dataset(Dataset):
     Caches file data to avoid repeated file I/O.
     """
 
-    def __init__(self, cfg, mode="pool", has_fail_mask=True, lazy_load=False):
+    def __init__(self, cfg, mode="pool", lazy_load=False):
         """
         Args:
             cfg: Dataset configuration
             mode: Dataset mode (should be "pool")
-            has_fail_mask: Whether to load failure masks
             lazy_load: If True, load files on-demand. If False, load all at init (faster for sampling)
         """
         self.cfg = cfg
         self.mode = mode
-        self.has_fail_mask = has_fail_mask
         self.data_dir = os.path.join(cfg.dataset_root, mode)
         self.lazy_load = lazy_load
         

@@ -19,7 +19,7 @@ def check_duplicates_dataset(cfg):
     project_name = cfg.project
 
     print(f"🔍 Checking for duplicates in pool dataset for project: {project_name}")
-    pool_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool", False)
+    pool_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
 
     #print(f"✅ Loaded dataset with {len(pool_dataset)} samples.")
 

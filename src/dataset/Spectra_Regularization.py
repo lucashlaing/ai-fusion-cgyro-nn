@@ -7,12 +7,9 @@ import h5py
 
 
 class Spectra_Regularization_DataPipe(BaseDataPipe):
-    def __init__(self, cfg, num_workers, base_seed, mode, has_fail_mask=True):
+    def __init__(self, cfg, num_workers, base_seed, mode):
         super().__init__(cfg, num_workers, base_seed, mode)
         
-        self.is_filtering_ky = False #mode != 'pool'
-        self.is_filtering_nans = True # enabled by default, but with warnings
-        self.has_fail_mask = has_fail_mask
 
     def _read_path(self, file_path):
         print(f'Datapipe processing file: {file_path}')
@@ -37,24 +34,16 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
             for key in intermediate_target_keys:
                 flux_spectrum = np.array(f[key])    
 
-                # assert flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1, f"Unexpected shape at dim=2: {flux_spectrum.shape}"
-
-                # Option 1: Select the first index at dim=2 (assuming it’s always the useful one)
                 flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (size, nky, nf, ns, 5)
-                # 5 - channels ()
-                # ns - num species (elec, ions)
-                # nf - num fields? (should be 3 for cgyro, 1 for TGLF?) 
-
-                # Option 2 (optional): Check if both are equal
-                # assert np.allclose(flux_spectrum[:, :, 0], flux_spectrum[:, :, 1]), "Dim=2 entries differ"
 
                 # Sum over nf
                 summed_flux_spectrum = np.sum(flux_spectrum, axis=2)  # (size, nky, ns, 5)
 
                 intermediate_target_list.append(summed_flux_spectrum)
             
-            # get the failed mask containing which kys failed
-            if self.has_fail_mask:
+            # failed_mask marks which kys failed (0 == keep). If it's absent from
+            # the file (or the caller says there is none), treat every ky as valid.
+            if failed_mask_key in f:
                 failed_mask = np.array(f[failed_mask_key])
             else:
                 failed_mask = np.zeros(shape=(summed_flux_spectrum.shape[0], summed_flux_spectrum.shape[1]))
@@ -82,47 +71,23 @@ class Spectra_Regularization_DataPipe(BaseDataPipe):
         return (combined_matrix, target_flux_per_ky, failed_mask), len(combined_matrix)
 
     def _proc_data(self, data, rng, tc_rng):
-        if not self.is_filtering_ky:
-            if self.is_filtering_nans:
-                inputs, targets = self.filter_nans(data)
-            return (inputs.detach().clone(), targets.detach().clone())
-        
-        inputs = data[0]
-        targets = data[1]
-        failed_mask = data[2] == 0 # True for 0, False otherwise
-        # mask grabs out only the True values to give it shape (good_ky, 32)
-        inputs_filtered = inputs[failed_mask] # (good_ky, 32)
-        targets_filtered = targets[failed_mask].detach().clone() # (good_ky, 4)
-        
-        if self.is_filtering_nans:
-            inputs_filtered, targets_filtered = self.filter_nans((inputs_filtered, targets_filtered))
-            return inputs_filtered.detach().clone(), targets_filtered.detach().clone()
-        
-        return (torch.from_numpy(inputs_filtered).float(), targets_filtered.detach().clone())
-    
-    def filter_nans(self, data):
-        inputs = data[0]
-        targets = data[1]
+        inputs, targets, mask = data
+        if not torch.is_tensor(inputs):
+            inputs = torch.from_numpy(np.asarray(inputs)).float()
+        if not torch.is_tensor(targets):
+            targets = torch.from_numpy(np.asarray(targets)).float()
 
-        if type(inputs) == np.ndarray:
-            inputs = torch.from_numpy(inputs).float()
-        if type(targets) == np.ndarray:
-            targets = torch.from_numpy(targets).float()
+        keep = torch.as_tensor(np.asarray(mask) == 0)
+        inputs, targets = inputs[keep], targets[keep]
 
-        inputs_nan_mask = torch.isnan(inputs).any(dim=1)
-        targets_nan_mask = torch.isnan(targets).any(dim=1)
-        nan_mask = torch.logical_or(inputs_nan_mask, targets_nan_mask)
-        num_nans = torch.sum(nan_mask)
+        # Always-on NaN/Inf safety net
+        finite = torch.isfinite(inputs).all(dim=1) & torch.isfinite(targets).all(dim=1)
+        n_bad = int((~finite).sum())
+        if n_bad > 0:
+            print(f"Warning: {n_bad} NaN/Inf ky row(s) survived failed_mask -- dropping them")
+            inputs, targets = inputs[finite], targets[finite]
 
-        if num_nans > 0:
-            print(f'Warning: {num_nans} NaNs filtered during data processing')
-        
-        # We want to filter out any samples where a NaN is found in either input or target in any entry
-        # Use logical not to only keep samples where there are no NaNs found (resulting in a False nan_mask entry)
-        inputs_filtered = inputs[torch.logical_not(nan_mask), :]
-        targets_filtered = targets[torch.logical_not(nan_mask), :]
-
-        return inputs_filtered, targets_filtered
+        return (inputs.detach().clone(), targets.detach().clone())
 
 
     def _get_slice(self, data, index):

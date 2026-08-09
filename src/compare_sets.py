@@ -46,7 +46,7 @@ def run_dist_eval(cfg):
     # Model and dataset creation
     project_name = cfg.project
 
-    tglf_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool", has_fail_mask=False)
+    tglf_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
     cgyro_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
 
     tglf_dataset = list(tglf_datapipe)[:10000]
