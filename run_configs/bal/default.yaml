@@ -15,6 +15,10 @@ num_strata: 3
 strata_weights: [0.5, 0.3, 0.2]
 continuous_retrain: false # true = warm-start each BAL iter from prev weights (continual); false = reset to baseline (train-from-scratch)
 
+# --- LCMD selector (Largest Cluster Maximum Distance, JMLR 24 (2023) 5.2.8) ---
+lcmd_train_centers: 10000 # how many train points seed the clusters. NOT a speed knob: LCMD needs r = n_samples/(centers + new_sample_size) in the paper's ~10-45 range. Using the whole train set drives r<1, every cluster holds <=1 point, and LCMD silently collapses into plain farthest-point selection.
+lcmd_include_ky: true # true = ky is part of the distance, so each (physics, ky) row clusters on its own. false = one row per physics point (ky is not really a choice -- acquiring a point acquires all 24 ky). Revisit later.
+
 # Checkpointing and resume
 resume: false
 resume_path: ""

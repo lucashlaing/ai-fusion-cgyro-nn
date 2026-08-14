@@ -584,5 +584,35 @@ model:
       _epochs: 16
 
 
+  # LCMD (Largest Cluster Maximum Distance, Holzmuller et al. JMLR 24 (2023)
+  # 5.2.8) -- the first BATCH-JOINT selector in the grid. Same offline-pool +
+  # continuous_retrain=true recipe as bal-pool-combos-continuous so the curves
+  # are directly comparable; resourcing per PROJECT_KNOWLEDGE.md 5.3 (cpu 6 /
+  # ephemeral 300), not the copied 16/500 that kept jobs Pending.
+  #
+  # glo_uni_lcmd is the scientific reference point (the paper's setting, and the
+  # only one where LCMD does its own cross-stratum allocation) -- read it first.
+  # The *_uni_lcmd combos need no score_func, so they skip the EIG retrain and
+  # are much cheaper per iteration than the *_rank_* ones.
+  #
+  # NOTE bal.lcmd_train_centers is a STATISTICAL knob, not a speed knob: it must
+  # keep r = n_samples/(centers + new_sample_size) in the paper's ~10-45 band.
+  # At n_samples=400000 the default 10000 gives r = 20. See ACQ_GLOSSARY.md.
+  bal-pool-lcmd-continuous:
+    command: >-
+      [](git fetch origin; git reset --hard origin/lucas_runs; make download file=online-bal/model_bal_latest.pth; mkdir checkpoints; mv online-bal/model_bal_latest.pth checkpoints/model_bal_latest.pth; rm -rf online-bal/; make download file=tglf_sumf_data_major_minor_perturb_madcut_filter/; mv tglf_sumf_data_major_minor_perturb_madcut_filter data; mv data/train data/pool; mkdir data/train;) python src/bal_finetune.py finetune=True bal.sampling_mode=offline bal.continuous_retrain=true bal.initial_training_size=20000 bal.acquisition_function=<acq_func> bal.iterations=<bal_iter> bal.new_sample_size=10000 bal.n_samples=400000 bal.lcmd_train_centers=<lcmd_centers> bal.checkpoint_s3_uri=null opt.weight_decay=<weight_decay> opt.end_lr=<end_lr> opt.peak_lr=<peak_lr> epochs=<epochs> checkpoint_path='./checkpoints/model_bal_latest.pth';
+    gpu_count: 1
+    memory: 128
+    cpu_count: 6
+    ephemeral_storage: 300
+    hparam:
+      _acq_func: ['glo_uni_lcmd', 'rho_uni_lcmd', 'strat_uni_lcmd', 'res_uni_lcmd']
+      _bal_iter: 60
+      _end_lr: 1e-5
+      _peak_lr: 1e-3
+      _weight_decay: 1e-5
+      _epochs: 16
+      _lcmd_centers: 10000
+
 run:
   model: [bal-pool-combos-continuous]

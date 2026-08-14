@@ -463,6 +463,130 @@ class RhoRankEIG(BaseAcquisitionStrategy):
         )
 
 
+# =============================================================================
+#  LCMD family: SELECT=LCMD (Largest Cluster Maximum Distance, JMLR 24 (2023)
+#  section 5.2.8) x the existing separators/budgeters.
+#
+#  `glo_uni_lcmd` is the scientific reference point -- it is the only combo that
+#  reproduces the paper unmodified (one global pool, LCMD allocates across the
+#  input space by itself via its (REP) property). The stratified variants are a
+#  coherent hybrid -- budget by residual/radius, diversify within -- but they
+#  OVERRIDE LCMD's own cross-stratum allocation, so read them as a different
+#  method, not as a better-tuned LCMD.
+#
+#  The `*_uni_*` variants pass no score_func, so they skip the expensive EIG
+#  retrain entirely; the `*_rank_*` variants compute EIG purely to RANK strata
+#  for budgeting (mirroring RhoRankRan) -- the selector itself ignores scores.
+# =============================================================================
+
+class GloUniLCMD(BaseAcquisitionStrategy):
+    """Global pool + uniform budget + LCMD selection (the paper's setting)."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Global Separation, Uniform Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_global,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_lcmd,
+        )
+
+
+class RhoUniLCMD(BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_lcmd,
+        )
+
+
+class StratUniLCMD(BaseAcquisitionStrategy):
+    """Residual strata + uniform budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, Uniform Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_lcmd,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+        )
+
+
+class ResUniLCMD(BaseAcquisitionStrategy):
+    """Residual classes + uniform budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, Uniform Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_lcmd,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+        )
+
+
+class StratRankLCMD(BaseAcquisitionStrategy):
+    """Residual strata + EIG-ranked budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, EIG-Ranked Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_lcmd,
+            score_func=self._compute_eig_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class ResRankLCMD(BaseAcquisitionStrategy):
+    """Residual classes + EIG-ranked budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, EIG-Ranked Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_lcmd,
+            score_func=self._compute_eig_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
+class RhoRankLCMD(BaseAcquisitionStrategy):
+    """Rho strata + EIG-ranked budget + LCMD selection."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, EIG-Ranked Budgeting, LCMD Selection Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_ranked_weights,
+            selector_func=self._select_lcmd,
+            score_func=self._compute_eig_score,
+            strata_weights=getattr(self.cfg, 'strata_weights', [1.0]),
+        )
+
+
 STRATEGY_HANDLER = {
     "random": RandomStrategy,
     "eig": EIGStrategy,
@@ -495,4 +619,12 @@ STRATEGY_HANDLER = {
     "rho_rank_pflip": RhoRankPFlip,
     "rho_rank_ow": RhoRankOW,
     "rho_rank_eig": RhoRankEIG,
+    # --- LCMD selector (batch-joint diversity; see the block above) ---
+    "glo_uni_lcmd": GloUniLCMD,
+    "rho_uni_lcmd": RhoUniLCMD,
+    "strat_uni_lcmd": StratUniLCMD,
+    "res_uni_lcmd": ResUniLCMD,
+    "strat_rank_lcmd": StratRankLCMD,
+    "res_rank_lcmd": ResRankLCMD,
+    "rho_rank_lcmd": RhoRankLCMD,
 }
