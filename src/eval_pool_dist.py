@@ -8,7 +8,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from bal import BAL_HANDLER
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from model import MODEL_HANDLER
 from utils import (
     set_seed,
@@ -44,7 +44,7 @@ def run_dist_eval(cfg):
     project_name = cfg.project
     model = MODEL_HANDLER["SR"](cfg.model)
     
-    pool_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    pool_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
 
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
 
@@ -76,7 +76,7 @@ def run_dist_eval(cfg):
     print(f'Pool size: {len(list(pool_datapipe))}')
 
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
 def main(cfg: DictConfig):
     """
     Main function to run the training.

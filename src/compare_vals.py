@@ -3,7 +3,7 @@ import torch
 import hydra
 import numpy as np
 from omegaconf import DictConfig, OmegaConf
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from torch.utils.data import DataLoader
 from utils import InfiniteDataLooper
 
@@ -25,7 +25,7 @@ def ragged_collate(batch):
     targets_cat = torch.cat(targets, dim=0)
     return inputs_cat, targets_cat
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
 def main(cfg: DictConfig):
     
     # --- ARGUMENT PARSING ---
@@ -51,7 +51,7 @@ def main(cfg: DictConfig):
     print(f"2. Initializing DataLoader for New Data...")
     # Initialize the dataset pointing to your new H5
     # Note: Ensure cfg.dataset is configured to look at your generated h5 folder
-    test_datapipe = DATSET_HANDLER[cfg.project](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+    test_datapipe = resolve_datapipe(cfg.dataset, cfg.project)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
     
     test_loader = DataLoader(
         test_datapipe,

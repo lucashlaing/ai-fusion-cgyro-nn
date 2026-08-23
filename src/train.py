@@ -8,7 +8,7 @@ from datetime import datetime
 from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from model import MODEL_HANDLER
 #from bal import BAL_HANDLER
 from bal import (
@@ -50,7 +50,7 @@ def run_train(cfg):
         resume_run_id = getattr(cfg, "wandb_run_id", None)
         
         init_kwargs = {
-            "project": f"{cfg.project}-TGLF-ONLINE",
+            "project": f"{cfg.project}-online",
             "config": OmegaConf.to_container(cfg, resolve=True),
         }
         
@@ -119,8 +119,8 @@ def run_train(cfg):
         print("No main model checkpoint path provided. Starting training from scratch.")
 
     # Dataset pipes
-    train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
-    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    train_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+    test_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
 
     # Trainer creation
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
@@ -328,7 +328,7 @@ def ragged_collate(batch):
     return inputs_cat, targets_cat
 
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
 def main(cfg: DictConfig):
     run_train(cfg)
 

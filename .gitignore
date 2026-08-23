@@ -17,3 +17,5 @@ aws/
 test/std_threshold_results/*
 test/plots/
 CLAUDE.md
+# local pip --target dir for boto3 (not in the conda env)
+.pylibs/

@@ -11,7 +11,7 @@ from tqdm import tqdm
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from model import MODEL_HANDLER
 from utils import set_seed, load_prev_model
 
@@ -53,7 +53,7 @@ def run_save(cfg):
     trainer = TRAINER_HANDLER[project_name](model, cfg.model, cfg.opt, cfg.dataset, tc_rng)
     trainer.model.eval()
 
-    test_datapipe = DATSET_HANDLER[project_name](
+    test_datapipe = resolve_datapipe(cfg.dataset, project_name)(
         cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test", False
     )
     test_loader = DataLoader(

@@ -1,7 +1,7 @@
 import torch
 import hashlib
 import numpy as np
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from utils import set_seed
 from omegaconf import OmegaConf
 
@@ -19,7 +19,7 @@ def check_duplicates_dataset(cfg):
     project_name = cfg.project
 
     print(f"🔍 Checking for duplicates in pool dataset for project: {project_name}")
-    pool_dataset = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    pool_dataset = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
 
     #print(f"✅ Loaded dataset with {len(pool_dataset)} samples.")
 
@@ -65,7 +65,7 @@ if __name__ == "__main__":
     import hydra
     from omegaconf import DictConfig
 
-    @hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+    @hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
     def main(cfg: DictConfig):
         check_duplicates_dataset(cfg)
 

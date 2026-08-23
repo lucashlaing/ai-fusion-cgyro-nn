@@ -78,3 +78,7 @@ config_keys: [
     "USE_BPER",
     "USE_BPAR"
 ]
+
+# Datapipe override. null -> use cfg.project. Set to CGYRO_SIM for native CGYRO
+# run output (sumf species/field axes transposed vs the TGLF pool).
+datapipe: null

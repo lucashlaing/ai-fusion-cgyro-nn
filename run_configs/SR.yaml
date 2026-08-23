@@ -7,7 +7,7 @@ defaults:
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none
 
-project: SR
+project: TGLF
 board: True
 plot: False
 dump_dir: "./latest_res"

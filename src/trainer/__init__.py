@@ -3,6 +3,7 @@ from .Spectra_Regularization import Spectra_Regularization_Trainer
 
 
 TRAINER_HANDLER = {
-    "SR": Spectra_Regularization_Trainer,
-    "CGYRO": Spectra_Regularization_Trainer
+    "TGLF": Spectra_Regularization_Trainer,
+    "CGYRO": Spectra_Regularization_Trainer,
+    "SR": Spectra_Regularization_Trainer,     # back-compat alias for "TGLF"
 }

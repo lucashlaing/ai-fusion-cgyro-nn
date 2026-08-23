@@ -1,4 +1,4 @@
-dataset_root: './data'
+dataset_root: './data_cgyro'
 input_keys: [
     "RLTS_3",
     "KAPPA_LOC",
@@ -81,4 +81,4 @@ config_keys: [
 
 # Datapipe override. null -> use cfg.project. Set to CGYRO_SIM for native CGYRO
 # run output (sumf species/field axes transposed vs the TGLF pool).
-datapipe: null
+datapipe: CGYRO

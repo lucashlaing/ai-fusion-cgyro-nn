@@ -18,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from bal import BAL_HANDLER, SAMPLING_HANDLER
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from model import MODEL_HANDLER
 from utils import (
     set_seed,
@@ -93,7 +93,7 @@ def run_train(cfg):
     # Trainer creation
     base_trainer = TRAINER_HANDLER[project_name](baseModel, cfg.model, cfg.opt, cfg.dataset, tc_rng)
     
-    test_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    test_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
     test_loader = DataLoader(
             test_datapipe,
             batch_size=cfg.batch,
@@ -154,7 +154,7 @@ def run_train(cfg):
             _restore_train_dir(train_snapshot, train_dir)
 
     else:
-        train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+        train_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
         bal = BalClass(cfg, train_datapipe, full_dataset, pool_tracker)
 
         print(f"Acquiring initial train dataset")
@@ -217,7 +217,7 @@ def run_train(cfg):
         if not cfg.bal.get("continuous_retrain", False):
             model.load_state_dict(initial_model_state)
 
-        train_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
+        train_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
 
         # Derive steps_per_epoch from the live train-set size so `epochs` means true passes
         train_size = _count_train_samples(train_dir, cfg.dataset.input_keys[0])
@@ -507,7 +507,7 @@ def _normalize_s3_prefix(s3_path):
         return s3_path[len(bucket_prefix):].lstrip("/")
     return s3_path.lstrip("/")
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
 def main(cfg: DictConfig):
     """
     Main function to run the training.

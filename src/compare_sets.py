@@ -8,7 +8,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from bal import BAL_HANDLER
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER
+from dataset import DATSET_HANDLER, resolve_datapipe
 from model import MODEL_HANDLER
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,8 +46,11 @@ def run_dist_eval(cfg):
     # Model and dataset creation
     project_name = cfg.project
 
-    tglf_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
-    cgyro_datapipe = DATSET_HANDLER[project_name](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
+    # This script deliberately reads BOTH datasets in one process, so it names the
+    # pipes explicitly instead of going through cfg.project -- the two store `sumf`
+    # with the species and field axes transposed (see dataset/CGYRO_Spectra.py).
+    tglf_datapipe = DATSET_HANDLER["TGLF"](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "pool")
+    cgyro_datapipe = DATSET_HANDLER["CGYRO"](cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
 
     tglf_dataset = list(tglf_datapipe)[:10000]
     cgyro_dataset = list(cgyro_datapipe)[:]
@@ -118,7 +121,7 @@ def find_nearest_tensor(query_tensor, dataset):
             match_target = target
     return match_input, match_target
 
-@hydra.main(version_base=None, config_path="../run_configs/", config_name="CGYRO")
+@hydra.main(version_base=None, config_path="../run_configs/", config_name="TGLF")
 def main(cfg: DictConfig):
     """
     Main function to run the training.

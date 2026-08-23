@@ -1,23 +1,21 @@
-# Native CGYRO run output (e.g. cgyro-rho-sep). Finetunes the TGLF-pretrained
-# model on the much smaller CGYRO set. For the TGLF pool / BAL loop use TGLF.yaml.
 defaults:
   - bal: default
-  - dataset: CGYRO_local
+  - dataset: SiNN_local
   - model: CGYRO
   - opt: CGYRO
   - _self_
   - override hydra/hydra_logging: none
   - override hydra/job_logging: none
 
-project: CGYRO
+project: TGLF
 board: True
 plot: False
 dump_dir: "./latest_res"
-checkpoint_path: "./checkpoints/best_best_offline.pth"
+checkpoint_path: "./checkpoints/model_final_checkpoint.pth"
 finetune: False
 base_seed: 42
 dataset_workers: 1
-batch: 256
+batch: 256 # try out bigger like 4000
 epochs: 10
 steps_per_epoch: 200
 loss_freq: 100
@@ -25,10 +23,12 @@ save_freq: 500
 plot_freq: 10
 time_freq: 500
 time_warm: 20
+# accumulation is for getting the mean and standard deviation of inputs/targets in model
+# set the steps to cover approximately 1 epoch
 accumulation_steps: 5
 
 # only to disable hydra's logging, ignore below
-hydra:
+hydra:  
   output_subdir: null
-  run:
+  run:  
     dir: .
