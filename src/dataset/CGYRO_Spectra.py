@@ -3,6 +3,7 @@ import torch
 import h5py
 
 from .Spectra_Regularization import Spectra_Regularization_DataPipe
+from .Pool_Dataset import Spectra_Pool_Dataset
 
 
 class CGYRO_Spectra_DataPipe(Spectra_Regularization_DataPipe):
@@ -199,3 +200,25 @@ class CGYRO_Spectra_DataPipe(Spectra_Regularization_DataPipe):
             failed_mask[idx] = 1
 
         return failed_mask
+
+
+class CGYRO_Pool_Dataset(Spectra_Pool_Dataset):
+    """BAL candidate pool over native CGYRO run output.
+
+    :class:`Spectra_Pool_Dataset` is hardcoded to the TGLF ``sumf`` layout, and
+    ``bal_finetune.py`` builds the pool directly rather than through
+    ``resolve_datapipe``. Pointing BAL at CGYRO data therefore used to read every
+    candidate's targets with the wrong axis: CGYRO's ``sumf.shape[2]`` is 2, so
+    the slice guard passes, ``axis=2`` then sums SPECIES instead of FIELDS, and
+    Qi/Pi are silently wrong with no error raised. Same bug
+    :class:`CGYRO_Spectra_DataPipe` exists to fix, on the acquisition path.
+
+    Only the summed axis differs, so this overrides one constant and adds the
+    same loud layout guard the train pipe uses.
+    """
+
+    _FIELD_AXIS = 3
+
+    def _derive_targets(self, flux_spectrum, file_path):
+        CGYRO_Spectra_DataPipe._check_layout(self, flux_spectrum, file_path)
+        return super()._derive_targets(flux_spectrum, file_path)

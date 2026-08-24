@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 from dataset import Spectra_Regularization_DataPipe
 from utils import InfiniteDataLooper, UsageTracker
 from bal.DIRECT import DIRECT
+from bal.sumf_layout import target_layout, reconstruct_sumf
 
 class BaseAcquisitionStrategy:
     def __init__(self, run_cfg, dataset, pool_tracker=None):
@@ -1221,25 +1222,12 @@ class BaseAcquisitionStrategy:
                     else:
                         mean_preds_per_ky = preds_per_ky_np
 
-                    n_samples, nky, _ = mean_preds_per_ky.shape
-                    ns, nf = 3, 2
-                    # Inverse of the target derivation in Spectra_Regularization:
+                    # Inverse of the target derivation in the datapipe:
                     # distribute the 4 predicted channels back into the sumf
                     # layout so the dataloader re-derives the same Ge/Qe/Qi/Pi.
-                    sumf = np.zeros((n_samples, nky, 2, nf, ns, 5))
-                    for slice_idx in range(2):
-                        sumf[:, :, slice_idx, 0, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
-                        sumf[:, :, slice_idx, 1, 0, 0] = mean_preds_per_ky[:, :, 0] / nf
-                        sumf[:, :, slice_idx, 0, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
-                        sumf[:, :, slice_idx, 1, 0, 1] = mean_preds_per_ky[:, :, 1] / nf
-
-                        q_ions = mean_preds_per_ky[:, :, 2] / ((ns - 1) * nf)
-                        p_ions = mean_preds_per_ky[:, :, 3] / ((ns - 1) * nf)
-
-                        for field_idx in range(nf):
-                            for ion_idx in range(1, ns):
-                                sumf[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-                                sumf[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
+                    # Must match THIS run's layout -- the old hardcoded TGLF
+                    # shape is rejected outright by the CGYRO datapipe.
+                    sumf = reconstruct_sumf(mean_preds_per_ky, target_layout(self.run_cfg))
 
                     f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf)
 

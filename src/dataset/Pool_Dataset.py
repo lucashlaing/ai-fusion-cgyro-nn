@@ -10,7 +10,19 @@ class Spectra_Pool_Dataset(Dataset):
     """
     Map-style dataset for pool data - supports indexing for efficient BAL sampling.
     Caches file data to avoid repeated file I/O.
+
+    Reads `sumf` in the **TGLF** layout. For native CGYRO run output use
+    :class:`dataset.CGYRO_Spectra.CGYRO_Pool_Dataset`, which differs only in
+    `_FIELD_AXIS` -- see the class docstring there for why the two are not
+    interchangeable.
     """
+
+    # Which axis of the sliced (N, nky, A, B, 5) array holds the FIELDS that get
+    # summed over. TGLF stores (field, species), so fields are axis 2. CGYRO
+    # stores (species, field), so they are axis 3. Both A and B are 3 in CGYRO,
+    # so a wrong value raises no shape error -- it silently sums species instead
+    # of fields and corrupts Qi/Pi. Subclasses override this and nothing else.
+    _FIELD_AXIS = 2
 
     def __init__(self, cfg, mode="pool", lazy_load=False):
         """
@@ -104,22 +116,9 @@ class Spectra_Pool_Dataset(Dataset):
             
             # Load flux spectrum
             flux_spectrum = np.array(f[intermediate_target_keys[0]])  # (n_samples, nky, 2, nf, ns, 5)
-            
-            # Process flux (same logic as before)
-            if flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1:
-                flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (n_samples, nky, nf, ns, 5)
-            
-            # Sum over fields
-            summed_flux = np.sum(flux_spectrum, axis=2)  # (n_samples, nky, ns, 5)
-            
-            # Extract targets
-            G_elec = summed_flux[:, :, 0, 0]
-            Q_elec = summed_flux[:, :, 0, 1]
-            Q_ions = np.sum(summed_flux[:, :, 1:, 1], axis=2)
-            P_ions = np.sum(summed_flux[:, :, 1:, 2], axis=2)
-            
-            target_flux = np.stack([G_elec, Q_elec, Q_ions, P_ions], axis=2)  # (n_samples, nky, 4)
-        
+
+            target_flux = self._derive_targets(flux_spectrum, file_path)  # (n_samples, nky, 4)
+
         # Convert to list of samples
         n_samples = input_data.shape[0]
         samples = []
@@ -137,6 +136,28 @@ class Spectra_Pool_Dataset(Dataset):
             ))
         
         return samples
+
+    def _derive_targets(self, flux_spectrum, file_path):
+        """Unpack `sumf` into per-ky [Ge, Qe, Qi, Pi].
+
+        Mirrors `Spectra_Regularization_DataPipe._read_path` (and, via
+        `_FIELD_AXIS`, `CGYRO_Spectra_DataPipe`) so a pool candidate and the same
+        row read through the train datapipe carry identical targets.
+        """
+        # Leading axis is 1 (TGLF) or 2 (CGYRO); index 1 is all-zero padding.
+        if flux_spectrum.shape[2] == 2 or flux_spectrum.shape[2] == 1:
+            flux_spectrum = flux_spectrum[:, :, 0, :, :, :]  # (n_samples, nky, A, B, 5)
+
+        # Sum over fields -- which axis that is depends on the layout.
+        summed_flux = np.sum(flux_spectrum, axis=self._FIELD_AXIS)  # (n_samples, nky, ns, 5)
+
+        # Channel order is [Ge, Qe, Qi, Pi]; species 0 is electrons, 1: are ions.
+        G_elec = summed_flux[:, :, 0, 0]
+        Q_elec = summed_flux[:, :, 0, 1]
+        Q_ions = np.sum(summed_flux[:, :, 1:, 1], axis=2)
+        P_ions = np.sum(summed_flux[:, :, 1:, 2], axis=2)
+
+        return np.stack([G_elec, Q_elec, Q_ions, P_ions], axis=2)  # (n_samples, nky, 4)
 
     def _load_file_lazy(self, file_idx):
         """Load a file on-demand if not already cached."""

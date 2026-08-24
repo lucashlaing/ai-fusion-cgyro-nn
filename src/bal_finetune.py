@@ -18,7 +18,7 @@ from omegaconf import DictConfig, OmegaConf, open_dict
 from torch.utils.data import DataLoader
 from bal import BAL_HANDLER, SAMPLING_HANDLER
 from trainer import TRAINER_HANDLER
-from dataset import DATSET_HANDLER, resolve_datapipe
+from dataset import DATSET_HANDLER, resolve_datapipe, resolve_pool_dataset
 from model import MODEL_HANDLER
 from utils import (
     set_seed,
@@ -53,7 +53,10 @@ def run_train(cfg):
     print("stamp: {}".format(time_stamp))
 
     project_name = cfg.project
-    full_dataset = DATSET_HANDLER["Pool"](cfg.dataset, "pool")
+    # Resolve the pool like the train/test pipes: DATSET_HANDLER["Pool"] is
+    # TGLF-layout only, so hardcoding it read CGYRO candidates on the wrong
+    # sumf axis and silently corrupted their Qi/Pi targets.
+    full_dataset = resolve_pool_dataset(cfg.dataset, project_name)(cfg.dataset, "pool")
     pool_tracker = UsageTracker()
 
     # Candidate-sampling regime for CGYRO: offline (random-from-pool, exact-hash,

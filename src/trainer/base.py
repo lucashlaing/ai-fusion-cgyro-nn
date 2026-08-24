@@ -43,10 +43,15 @@ class Base_Trainer:
         if total_train_steps is None:
             total_train_steps = opt_cfg.decay_steps
 
+        # max(1, ...): BAL derives steps_per_epoch from the LIVE train-set size,
+        # so a small pool gives a small total (CGYRO: 191 samples / batch 256 ->
+        # 1 step/epoch). Under 10 total steps the old expression floored to 0 and
+        # WarmupCosineDecayScheduler divided by it. No effect on TGLF, where the
+        # totals are always >= 10.
         self.lr_scheduler = WarmupCosineDecayScheduler(
             optimizer=self.optimizer,
-            warmup=total_train_steps//10,
-            max_iters=total_train_steps,
+            warmup=max(1, total_train_steps//10),
+            max_iters=max(2, total_train_steps),
         )
 
         print(self.model, flush=True)

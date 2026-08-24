@@ -11,6 +11,7 @@ import hashlib
 from collections import defaultdict
 sys.path.append('./src/bal/')
 from BAL import BAL
+from bal.sumf_layout import target_layout, reconstruct_sumf, field_axis
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -132,6 +133,10 @@ class Offline(BAL):
         candidates, outputs = [], []
         candidate_rho = [] if rho_index is not None else None
         inputs_list, flux_list, mask_list, ky_list = [], [], [], []
+        # Global pool indices of the gathered samples, in the order they are
+        # buffered. Lets Step 4 copy each row's real `sumf` back out of its
+        # source h5 instead of fabricating one -- see _copy_source_rows.
+        selected_global_idx = []
         for sample_idx, (inp, tflux) in enumerate(self.pool_dataset):
             if sample_idx not in sample_to_kys:
                 continue
@@ -151,6 +156,7 @@ class Offline(BAL):
                 flux_list.append(tflux.numpy())
                 mask_list.append(inp_np[:, -1] == 0)
                 ky_list.append(inp_np[:, -1])
+                selected_global_idx.append(sample_idx)
 
         final_candidates = torch.cat(candidates, dim=0)
         final_outputs = torch.cat(outputs, dim=0)
@@ -183,23 +189,27 @@ class Offline(BAL):
                     if key == "ky":
                         h5f.create_dataset(key, data=ky_arr)
 
+                copied = set()
                 if len(dataset_cfg.intermediate_target_keys) > 0:
-                    ns, nf = 3, 2  # electrons + 2 ions, 2 fields
-                    sumf = np.zeros((n_s, nky, 2, nf, ns, 5))
-                    for slice_idx in range(2):
-                        sumf[:, :, slice_idx, 0, 0, 0] = flux_arr[:, :, 0] / nf
-                        sumf[:, :, slice_idx, 1, 0, 0] = flux_arr[:, :, 0] / nf
-                        sumf[:, :, slice_idx, 0, 0, 1] = flux_arr[:, :, 1] / nf
-                        sumf[:, :, slice_idx, 1, 0, 1] = flux_arr[:, :, 1] / nf
-                        q_ions = flux_arr[:, :, 2] / ((ns - 1) * nf)
-                        p_ions = flux_arr[:, :, 3] / ((ns - 1) * nf)
-                        for field_idx in range(nf):
-                            for ion_idx in range(1, ns):
-                                sumf[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-                                sumf[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
-                    h5f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf)
+                    # Offline candidates are REAL pool rows, so copy their sumf
+                    # (and rho / OUT_* / failed_mask) straight out of the source
+                    # h5 rather than synthesizing one. The old writer hardcoded
+                    # `ns, nf = 3, 2` -- the TGLF layout -- which the CGYRO train
+                    # pipe rejects, and which made the OUT_* cross-check vacuous.
+                    # Verbatim rows are layout-agnostic and keep that check real.
+                    copied = self._copy_source_rows(
+                        h5f, meta_grp, selected_global_idx, dataset_cfg
+                    )
+                    if dataset_cfg.intermediate_target_keys[0] not in copied:
+                        print("[Offline] pool exposes no per-row provenance; "
+                              "falling back to the synthetic TGLF-layout sumf")
+                        h5f.create_dataset(
+                            dataset_cfg.intermediate_target_keys[0],
+                            data=self._synthetic_sumf(flux_arr, n_s, nky),
+                        )
 
-                meta_grp.create_dataset(dataset_cfg.mask_key, data=masks_arr.astype(np.bool_))
+                if dataset_cfg.mask_key not in copied:
+                    meta_grp.create_dataset(dataset_cfg.mask_key, data=masks_arr.astype(np.bool_))
                 meta_grp.create_dataset("total_count", data=np.full((n_s,), nky, dtype=np.int32))
 
             self._candidates_h5_path = save_path
@@ -217,6 +227,69 @@ class Offline(BAL):
     # samples vs rho=0.9 ~71k), so a uniform reservoir under-samples the outer
     # radii; balancing draws an equal share per rho instead.
     RHO_N = 9
+
+    def _copy_source_rows(self, h5f, meta_grp, global_indices, dataset_cfg):
+        """Copy the selected rows' raw datasets verbatim from the pool h5 files.
+
+        Copies ``sumf``, ``meta/<mask_key>``, ``rho`` and any ``OUT_*`` totals,
+        preserving each file's own shape and dtype. Because the rows are byte
+        copies of real pool rows, the resulting ``candidates.h5`` is in whatever
+        layout the source data uses -- so the train datapipe that later reads it
+        re-derives exactly the targets the pool reported, and the CGYRO pipe's
+        ``OUT_*`` reconciliation actually has something to verify.
+
+        Returns the set of key names written (empty if the pool class exposes no
+        per-row provenance, e.g. a non-map-style pool).
+        """
+        pool = self.pool_dataset
+        index = getattr(pool, "index", None)
+        file_list = getattr(pool, "file_list", None)
+        if not index or not file_list:
+            return set()
+
+        # Group the chosen rows by source file, remembering where each one goes.
+        by_file = defaultdict(list)
+        for out_pos, g_idx in enumerate(global_indices):
+            file_idx, local_idx = index[g_idx]
+            by_file[file_idx].append((out_pos, local_idx))
+
+        sumf_key = dataset_cfg.intermediate_target_keys[0]
+        mask_key = dataset_cfg.mask_key
+        n_out = len(global_indices)
+        buffers = {}
+
+        for file_idx, pairs in by_file.items():
+            # h5py fancy indexing requires strictly increasing selections.
+            pairs.sort(key=lambda t: t[1])
+            out_pos = np.array([p for p, _ in pairs])
+            rows = [l for _, l in pairs]
+            with h5py.File(file_list[file_idx], "r") as src:
+                wanted = [sumf_key, "rho", "meta/" + mask_key]
+                wanted += sorted(k for k in src.keys() if k.startswith("OUT_"))
+                for key in wanted:
+                    if key not in src:
+                        continue
+                    block = src[key][rows]
+                    if key not in buffers:
+                        buffers[key] = np.zeros((n_out,) + block.shape[1:], dtype=block.dtype)
+                    buffers[key][out_pos] = block
+
+        for key, arr in buffers.items():
+            if key.startswith("meta/"):
+                meta_grp.create_dataset(key.split("/", 1)[1], data=arr)
+            else:
+                h5f.create_dataset(key, data=arr)
+
+        return {k.split("/", 1)[-1] for k in buffers}
+
+    def _synthetic_sumf(self, flux_arr, n_s, nky):
+        """Rebuild a sumf that re-derives to the given 4 channels.
+
+        Only reached when the pool exposes no per-row provenance to copy from.
+        The spectral structure is fabricated, but it is emitted in whichever
+        layout this run's datapipe reads -- see bal/sumf_layout.py.
+        """
+        return reconstruct_sumf(flux_arr, target_layout(self.run_cfg))
 
     def _rho_stratum(self, rho_val):
         """Map a discrete rho label (0.1..0.9) to a stratum index 0..8; -1 if off-grid."""
@@ -433,24 +506,9 @@ class Offline(BAL):
 
             # reconstruct intermediate target (sumf-like) if needed
             if len(dataset_cfg.intermediate_target_keys) > 0:
-                ns = 3  # electrons + 2 ions (same as before)
-                nf = 2
-                sumf_reconstructed = np.zeros((n_samples, nky, 2, nf, ns, 5))
-                for slice_idx in range(2):
-                    sumf_reconstructed[:, :, slice_idx, 0, 0, 0] = flux_per_ky[:, :, 0] / nf
-                    sumf_reconstructed[:, :, slice_idx, 1, 0, 0] = flux_per_ky[:, :, 0] / nf
-                    sumf_reconstructed[:, :, slice_idx, 0, 0, 1] = flux_per_ky[:, :, 1] / nf
-                    sumf_reconstructed[:, :, slice_idx, 1, 0, 1] = flux_per_ky[:, :, 1] / nf
-
-                    n_ion_species = ns - 1
-                    q_ions = flux_per_ky[:, :, 2] / (n_ion_species * nf)
-                    p_ions = flux_per_ky[:, :, 3] / (n_ion_species * nf)
-
-                    for field_idx in range(nf):
-                        for ion_idx in range(1, ns):
-                            sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 1] = q_ions
-                            sumf_reconstructed[:, :, slice_idx, field_idx, ion_idx, 2] = p_ions
-
+                # Emit the layout this run's datapipe reads. Hardcoding the TGLF
+                # one here made every acquired-sample file unreadable on CGYRO.
+                sumf_reconstructed = reconstruct_sumf(flux_per_ky, target_layout(self.run_cfg))
                 f.create_dataset(dataset_cfg.intermediate_target_keys[0], data=sumf_reconstructed)
 
             # Meta group
@@ -485,7 +543,11 @@ class Offline(BAL):
                 flux_spectrum = np.array(f[key])
                 assert flux_spectrum.shape[2] in (1, 2), f"Unexpected shape: {flux_spectrum.shape}"
                 flux_spectrum = flux_spectrum[:, :, 0, :, :, :]
-                summed_flux_spectrum = np.sum(flux_spectrum, axis=2)
+                # candidates.h5 holds rows copied verbatim from the pool, so its
+                # layout is the pool's -- not always TGLF's axis 2.
+                summed_flux_spectrum = np.sum(
+                    flux_spectrum, axis=field_axis(target_layout(self.run_cfg))
+                )
                 intermediate_target_list.append(summed_flux_spectrum)
 
         input_data = np.stack(input_list, axis=1)
