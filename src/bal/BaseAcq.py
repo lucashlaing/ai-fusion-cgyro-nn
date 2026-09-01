@@ -1135,15 +1135,28 @@ class BaseAcquisitionStrategy:
         chunk_size = 50000
         input_chunks = torch.split(input, chunk_size, dim=0)
 
-        with torch.no_grad():
-            model.train() 
-            for _ in range(self.cfg.model_count):
-                chunk_preds = []
-                for chunk in input_chunks:
-                    device = next(model.parameters()).device # Dynamically get device from model
-                    prediction = model(chunk.to(device))
-                    chunk_preds.append(prediction.cpu())
-                predictions_per_ky.append(torch.cat(chunk_preds, dim=0))
+        # train() is REQUIRED here -- it is what keeps nn.Dropout(p=0.1) stochastic,
+        # which is the entire basis of the MC-dropout uncertainty estimate. What was
+        # wrong was never restoring it: bal_finetune.py does not set the mode around
+        # its training loop, so this leaked train() silently became the mode of the
+        # NEXT iteration's training, and only for strategies that call this helper
+        # (every *_pflip/*_ow/*_eig and every res_*/strat_* separator). That made
+        # dropout-during-training a function of the acquisition strategy -- an
+        # uncontrolled regularizer correlated with the variable under study.
+        # Same save/restore the phi helper above already does.
+        was_training = model.training
+        try:
+            with torch.no_grad():
+                model.train()
+                for _ in range(self.cfg.model_count):
+                    chunk_preds = []
+                    for chunk in input_chunks:
+                        device = next(model.parameters()).device # Dynamically get device from model
+                        prediction = model(chunk.to(device))
+                        chunk_preds.append(prediction.cpu())
+                    predictions_per_ky.append(torch.cat(chunk_preds, dim=0))
+        finally:
+            model.train(was_training)
 
         return torch.stack(predictions_per_ky, dim=0)
     

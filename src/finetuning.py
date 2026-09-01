@@ -77,7 +77,7 @@ def run_train(cfg):
 
     ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"
     if not os.path.exists(ckpt_dir):
-        os.makedirs(ckpt_dir)
+        os.makedirs(ckpt_dir, exist_ok=True)
     OmegaConf.save(cfg, ckpt_dir + "/cfg.yaml")
 
     print("Training starts...")
@@ -135,7 +135,7 @@ def run_train(cfg):
         if trainer.train_step % cfg.save_freq == 0:
             ckpt_dir = f"{cfg.dump_dir}/{cfg.project}/{time_stamp}"
             if not os.path.exists(ckpt_dir):
-                os.makedirs(ckpt_dir)
+                os.makedirs(ckpt_dir, exist_ok=True)
             print("Current time: " + datetime.now(pytz.timezone("America/Los_Angeles")).strftime("%Y%m%d-%H%M%S"))
             trainer.save(ckpt_dir)
 
@@ -157,6 +157,20 @@ def run_train(cfg):
 
     print("final model weights saved at ", ckpt_dir)
     trainer.save(ckpt_dir)
+
+    # Full-test-set loss. The `test_loss` logged in the loop is ONE batch (see
+    # CLAUDE.md) and must never be used to rank runs. Single batch on purpose:
+    # get_test_loss averages per-BATCH means, so at cfg.batch=256 with ~556 test
+    # rows the partial 3rd batch would carry 1/3 of the weight while holding ~8%
+    # of the rows -- and its size varies fold to fold across bootstrap splits.
+    full_test_loader = DataLoader(
+        test_datapipe, batch_size=10**6, num_workers=cfg.dataset_workers,
+        pin_memory=True, collate_fn=ragged_collate,
+    )
+    final_test_loss = trainer.get_test_loss(full_test_loader)
+    print("FULL TEST LOSS:", final_test_loss)
+    if cfg.board:
+        wandb.log({"BAL Test Loss": final_test_loss})
 
     if cfg.board:
         wandb.finish()

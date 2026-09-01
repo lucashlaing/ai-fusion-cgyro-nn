@@ -251,6 +251,14 @@ def run_train(cfg):
             os.makedirs(ckpt_dir)
         OmegaConf.save(cfg, ckpt_dir + "/cfg.yaml")
 
+        # Pin the training mode explicitly. Nothing else in this loop sets it:
+        # load_state_dict does not change mode, get_test_loss leaves eval(), and
+        # get_prediction used to leave train(). The mode was therefore inherited
+        # from whatever ran last, which differed BY ACQUISITION FUNCTION. train()
+        # is the right choice: it matches how the pretrained checkpoint was made
+        # (offline_train.py trains a fresh module, i.e. dropout on).
+        model.train()
+
         print("Training starts...")
         if torch.cuda.is_available():
             torch.cuda.synchronize()

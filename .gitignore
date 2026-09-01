@@ -19,3 +19,8 @@ test/plots/
 CLAUDE.md
 # local pip --target dir for boto3 (not in the conda env)
 .pylibs/
+data_cgyro_boot/
+data_cgyro_boot_bal/
+# local data symlinks / staging copies (machine-specific paths)
+data_cgyro
+data_cgyro_split/
