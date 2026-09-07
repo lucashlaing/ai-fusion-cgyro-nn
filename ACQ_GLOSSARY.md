@@ -45,6 +45,7 @@ the three tables below.
 | Plot word | Key token | Function | What it does |
 |-----------|-----------|----------|--------------|
 | **Random** | `ran` | `_select_random` | Random unique pick. |
+| **LCMD** | `lcmd` | `_select_lcmd` | Largest Cluster Maximum Distance — the only SELECT that scores the batch **jointly** for diversity. |
 | **P-Flip** | `pflip` | `_select_p_flip` | Boundary refinement — picks candidates most likely to "flip" bins (residual at the band edge **and** high model uncertainty). |
 | **Importance** | `ow` | `_select_top_score` + `_compute_ow_score` | Top-k by **Output-Weighted** (importance-weighted) score. |
 | **EIG** | `eig` | `_select_top_score` + `_compute_eig_score` | Top-k by **EIG** score. |
@@ -97,6 +98,13 @@ the three tables below.
 | `rho_rank_pflip` | Rho-EIG-P-Flip | Rho | EIG (ranked) | P-Flip |
 | `rho_rank_ow` | Rho-Ranked-Importance | Rho | Ranked | Importance |
 | `rho_rank_eig` | Rho-EIG-EIG | Rho | EIG (ranked) | EIG |
+| `glo_uni_lcmd` | UniBin-Uniform-LCMD | UniBin | Uniform | LCMD |
+| `strat_uni_lcmd` | Uniform-Uniform-LCMD | Uniform | Uniform | LCMD |
+| `strat_rank_lcmd` | Uniform-Ranked-LCMD | Uniform | Ranked | LCMD |
+| `res_uni_lcmd` | Deviation-Uniform-LCMD | Deviation | Uniform | LCMD |
+| `res_rank_lcmd` | Deviation-Ranked-LCMD | Deviation | Ranked | LCMD |
+| `rho_uni_lcmd` | Rho-Uniform-LCMD | Rho | Uniform | LCMD |
+| `rho_rank_lcmd` | Rho-EIG-LCMD | Rho | EIG (ranked) | LCMD |
 
 > **Rho family** (radial-band separator, added 2026-07-30): the 8
 > `rho_*` combos above are Rho × {Uniform, Ranked} budget × {Random, P-Flip,
@@ -126,3 +134,10 @@ the three tables below.
 - Step 1 `UniBin` ("**one** bin") covers both the bare strategies
   (`random`/`eig`/`direct`) and the `glo_*` family — all one global pool.
   Step 2 `Ranked` is the single word for `_budget_ranked_weights`.
+- **`lcmd`** is Largest Cluster Maximum Distance (JMLR 24, 2023) — the only SELECT
+  that scores a batch jointly rather than per-candidate. `glo_uni_lcmd` is the one
+  combo that reproduces the paper unmodified. **`bal.lcmd_train_centers` is a
+  statistical knob, not a perf knob**: it must stay well below the per-stratum
+  candidate count or LCMD silently collapses into MaxDist. This is exactly what
+  broke `rho_uni_lcmd` (worst of all 36 strategies) — 9 rho strata leave ~247
+  candidates each against 100 centers. See PROJECT_KNOWLEDGE.md §11 and §13.2.

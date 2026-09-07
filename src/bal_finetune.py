@@ -99,12 +99,11 @@ def run_train(cfg):
     test_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "test")
     test_loader = DataLoader(
             test_datapipe,
-            batch_size=cfg.batch,
+            batch_size=10**6,
             num_workers=cfg.dataset_workers,
             pin_memory=True,
             collate_fn=ragged_collate,
         )
-    test_loopers = InfiniteDataLooper(test_loader)
 
     # LUCAS KEY .... CHANGE TO ZACH
     if cfg.board:
@@ -281,10 +280,6 @@ def run_train(cfg):
                 with torch.no_grad():
                     # Train loss and error
                     trainer.board_loss(train_data, "train", cfg.board)
-
-                    # Test loss and error # NOTE for futian to check
-                    test_data = next(test_loopers)
-                    trainer.board_loss(test_data, "test", cfg.board)
 
             # Save checkpoint
             if trainer.train_step % cfg.save_freq == 0:
