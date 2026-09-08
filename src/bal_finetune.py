@@ -156,6 +156,9 @@ def run_train(cfg):
             _restore_train_dir(train_snapshot, train_dir)
 
     else:
+        # make sure to reset train folder to zero at start of runs
+        _clear_train_dir(train_dir)
+
         train_datapipe = resolve_datapipe(cfg.dataset, project_name)(cfg.dataset, cfg.dataset_workers, cfg.base_seed, "train")
         bal = BalClass(cfg, train_datapipe, full_dataset, pool_tracker)
 
@@ -490,6 +493,22 @@ def _count_train_samples(train_dir, input_key):
         with h5py.File(fp, "r") as f:
             total += f[input_key].shape[0]
     return total
+
+
+def _clear_train_dir(train_dir):
+    """Empty BAL's train/ output dir before a fresh (non-resume) run.
+
+    Reports what it removed: a non-empty train/ at this point means the previous
+    run in the same pod leaked its acquisitions into this one, and that is worth
+    seeing in the log rather than silently repairing.
+    """
+    stale = sorted(glob.glob(os.path.join(train_dir, "**/*.h5"), recursive=True))
+    if stale:
+        print(f"Clearing {len(stale)} stale h5 file(s) from {train_dir}: "
+              f"{', '.join(os.path.basename(p) for p in stale[:6])}"
+              f"{' ...' if len(stale) > 6 else ''}")
+        shutil.rmtree(train_dir)
+    os.makedirs(train_dir, exist_ok=True)
 
 
 def _restore_train_dir(src_dir, dst_dir):
