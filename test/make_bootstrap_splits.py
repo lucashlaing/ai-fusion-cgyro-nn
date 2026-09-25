@@ -70,7 +70,7 @@ import numpy as np
 
 
 # === USER INPUT (env override: BOOT_<NAME>) ===
-SRC_DIR      = "/data/lucas_work/cgyro-rho-sep/rho"
+SRC_DIR      = "/data/lucas_work/cgyro-rho-sep-new/rho"
 OUT_ROOT     = "./data_cgyro_boot"
 K_FOLDS      = 5
 N_REPEATS    = 8
@@ -79,10 +79,21 @@ LAYOUT       = "fixed"      # fixed | bal
 ONLY         = ""           # "" -> all splits; else comma-separated split ids
 SELF_CHECK   = True
 # The partition is derived from SEED alone -- there is no stored index. The one
-# thing a seed cannot protect against is the SOURCE DATA changing: five files were
-# added to this dataset on 2026-08-23, which would silently redefine every split.
-# Set to "" to bypass after a deliberate dataset change (and re-run the base case).
-EXPECT_SOURCE_FINGERPRINT = "7efd43ad7ab9a016975e6f9173dac191"
+# thing a seed cannot protect against is the SOURCE DATA changing, which would
+# silently redefine every split. Set to "" to bypass after a deliberate dataset
+# change (and re-run the base case).
+#
+# BATCH HISTORY (the fingerprint is md5 of the sorted basenames):
+#   7efd43ad7ab9a016975e6f9173dac191  46 files, 2778 rows, 2112 unique hashes
+#                                     -- the batch the 36-arm study (PK 15.17) ran on
+#   7784f87c6ecb9384b1ef3c4ee5a13b95  65 files, 3908 rows, 2995 unique hashes
+#                                     -- new batch converted 2026-09-22, verified
+#                                        2026-09-25 by test/check_new_cgyro_data.py
+#                                        (OUT_* corr 1.000000 on all four channels;
+#                                        old 46 are a strict subset, no hashes lost)
+# Results across batches DO NOT POOL: the pool changed, so splits differ and every
+# paired contrast is against a different baseline. Start a new study, do not extend.
+EXPECT_SOURCE_FINGERPRINT = "7784f87c6ecb9384b1ef3c4ee5a13b95"
 # ==============================================
 
 SCHEMA_VERSION = 1
