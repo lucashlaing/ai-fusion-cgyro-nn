@@ -14,6 +14,12 @@ hostname_blacklist:
  - k8s-chase-ci-05.calit2.optiputer.net
  - k8s-chase-ci-04.calit2.optiputer.net
  - uicnrp-fiona.evl.uic.edu  # dead GPU: ERROR_GPU_IS_LOST (UnexpectedAdmissionError), 2026-07-23
+ - k8s-3090-01.clemson.edu  # dead GPU: ERROR_GPU_IS_LOST (UnexpectedAdmissionError), 2026-08-24
+ - gpn-fiona-mizzou-7.rnet.missouri.edu  # image pull dies mid-layer-extract (context canceled), 2026-08-24
+ - k8s-3090-01.usd.edu  # dead GPU: nvlink GPU is lost (UnexpectedAdmissionError), 2026-09-04
+ - nautilus-ext-gpu01.fullerton.edu  # dead GPU: nvlink 'GPU is lost' (UnexpectedAdmissionError), ate 8/10 b3 jobs, 2026-09-07
+ - patternlab.calit2.optiputer.net  # containerd shim timeout: image pulled + container created, then 'failed to create shim task: context canceled', context deadline exceeded; killed b2-w2-pod-0, 2026-09-25
+ - hcc-chase-shor-c4715.unl.edu  # dead GPU: nvlink 'GPU is lost' (UnexpectedAdmissionError), killed b2-w5-pod-1 + w6-pod-1, 2026-09-29
 
 hostname_whitelist:
   - gpu-02.csusb.edu
@@ -30,7 +36,7 @@ hostname_whitelist:
   - k8s-3090-01.calit2.optiputer.net
   - knuron.calit2.optiputer.net
   - prp01.ifa.hawaii.edu
-  - nautilus-ext-gpu01.fullerton.edu
+  # - nautilus-ext-gpu01.fullerton.edu  # dead GPU 2026-09-07, see blacklist above
   - ry-gpu-14.sdsc.optiputer.net
   - ry-gpu-01.sdsc.optiputer.net
   - ry-gpu-02.sdsc.optiputer.net
@@ -43,7 +49,7 @@ hostname_whitelist:
   # - ry-gpu-06.sdsc.optiputer.net
   - k8s-3090-02.clemson.edu
   # - fiona-1.famu.edu
-  - hcc-chase-shor-c4715.unl.edu
+  # - hcc-chase-shor-c4715.unl.edu  # dead GPU 2026-09-29, see blacklist above
   - hcc-chase-shor-c4709.unl.edu
   - ry-gpu-04.sdsc.optiputer.net
   - ry-gpu-10.sdsc.optiputer.net

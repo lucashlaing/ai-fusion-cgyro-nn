@@ -24,3 +24,4 @@ data_cgyro_boot_bal/
 # local data symlinks / staging copies (machine-specific paths)
 data_cgyro
 data_cgyro_split/
+test/__pycache__/

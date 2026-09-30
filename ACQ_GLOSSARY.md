@@ -67,6 +67,12 @@ the three tables below.
 `STRATEGY_HANDLER` in `src/bal/DerivedAcq.py`. The **Plot name** is the
 `Separate-Budget-Select` label used in `plot_plot.py`.
 
+> **Do not re-derive these labels from the config key — the mapping is not regular.**
+> `res_rank_ran` is *Deviation-**EIG**-Random* but `res_rank_ow` is *Deviation-**Ranked**-Importance*:
+> `_budget_ranked_weights` ranks strata by whichever score the selector uses, so `rank` reads as
+> "EIG (ranked)" for the ran/pflip/eig/lcmd selectors and plain "Ranked" for `ow`. Copy this table
+> verbatim (`test/plot_bootstrap.py:SPEC` does).
+
 | Config key | Plot name | Separate | Budget | Select |
 |------------|-----------|----------|--------|--------|
 | `random` | UniBin-Uniform-Random | UniBin | Uniform | Random |
