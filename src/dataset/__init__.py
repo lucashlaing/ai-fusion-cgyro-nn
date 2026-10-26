@@ -2,6 +2,7 @@ from .base import BaseDataPipe
 from .Spectra_Regularization import Spectra_Regularization_DataPipe
 from .Pool_Dataset import Spectra_Pool_Dataset
 from .CGYRO_Spectra import CGYRO_Spectra_DataPipe, CGYRO_Pool_Dataset
+from .Weighted_Spectra import Weighted_Spectra_DataPipe
 
 # Keyed on cfg.project. Since the 2026-08-21 rename, the project name states which
 # DATA a run is on: "TGLF" = the TGLF pool, "CGYRO" = native CGYRO run output.
@@ -16,6 +17,8 @@ DATSET_HANDLER = {
     # old configs and checkpoints resolve. Note "SR" is TGLF-layout data.
     "SR": Spectra_Regularization_DataPipe,
     "CGYRO_SIM": CGYRO_Spectra_DataPipe,
+    # TGLF data carrying a per-sample coreset weight as input column 32.
+    "TGLF_W": Weighted_Spectra_DataPipe,
 }
 
 
@@ -44,6 +47,7 @@ POOL_HANDLER = {
     "CGYRO": CGYRO_Pool_Dataset,
     "SR": Spectra_Pool_Dataset,        # back-compat alias, TGLF-layout data
     "CGYRO_SIM": CGYRO_Pool_Dataset,   # back-compat alias
+    "TGLF_W": Spectra_Pool_Dataset,    # TGLF-layout pool; weights are train-only
 }
 
 

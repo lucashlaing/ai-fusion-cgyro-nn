@@ -8,4 +8,5 @@ MODEL_HANDLER = {
     "TGLF": Spectra_Regularization_NN,
     "CGYRO": Spectra_Regularization_NN,       # CGYRO_NN,
     "SR": Spectra_Regularization_NN,          # back-compat alias for "TGLF"
+    "TGLF_W": Spectra_Regularization_NN,      # same net as "TGLF"; weights live in the trainer
 }
