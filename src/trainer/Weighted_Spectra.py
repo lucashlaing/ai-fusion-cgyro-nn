@@ -90,33 +90,54 @@ class Weighted_Spectra_Trainer(Spectra_Regularization_Trainer):
         # altered to only train on the per ky loss
         return flux_per_ky_loss
 
-    def get_test_loss(self, dataloader, chunk=2_000_000):
+    def get_test_loss(self, dataloader, chunk=200_000):
         """
-        Full-test-set loss, UNWEIGHTED, computed in bounded memory.
+        Full-test-set loss, UNWEIGHTED, in bounded GPU memory.
 
         NOTE use_weights=False is deliberate and must stay. Test rows carry no
-        importance weights, and the number has to remain comparable to every
-        historical `BAL Test Loss` / `BAL/test_loss`. Never weight the eval
-        metric -- weighting is a training-distribution correction only.
+        importance weights, and the number has to stay comparable to every
+        historical `BAL Test Loss`. Never weight the eval metric.
 
-        WHY THE CHUNKING: both entry points build the test loader with
-        `batch_size=10**6` (finetuning.py:167, bal_finetune.py:102, set by
-        38ce8a4 to fix the CGYRO batch-mean bug on 556 test rows). TGLF's test
-        split is 901,290 samples x 24 ky = 21,630,960 rows, so ONE batch
-        through Linear(32->256) needs 20.63 GiB and OOMs even a 32 GB card when
-        lanes share it. Chunking the forward costs nothing and is EXACT: every
-        row carries 4 channels, so weighting each chunk's mean by its row count
-        reproduces the single-batch row-mean to float precision.
+        Both entry points build the test loader with `batch_size=10**6`
+        (finetuning.py:167, bal_finetune.py:102, from 38ce8a4, sized for
+        CGYRO's 556 test rows). TGLF's test split is 901,290 samples x 24 ky =
+        21,630,960 rows. TWO things blow up there, and fixing only the second
+        is not enough -- that is what killed an 8.9 h run:
+          1. moving the WHOLE batch to the GPU costs 21.6M x 37 x 4 B = 3.2 GB
+             before a single flop, so the slice MUST happen on CPU and only the
+             chunk is moved;
+          2. one Linear(32->256) over the full batch needs 20.63 GiB.
+        At chunk=200k a chunk is ~30 MB of data and ~205 MB of activation.
+        On OOM the chunk halves and retries all the way down, so this cannot
+        hard-fail on a small card -- cards here have ranged from 8 GB to 32 GB.
+        (The halving floor and the raise guard must agree: an early floor makes
+        the guard fire before the chunk can actually get small enough.)
+
+        EXACT: every row has 4 channels, so weighting each chunk's mean by its
+        row count reproduces the single-batch row-mean (verified float64
+        rel.err 2e-16).
         """
         self.model.eval()
         total, count = 0.0, 0
         with torch.no_grad():
             for data in dataloader:
-                data = self.move_to_device(data)
                 n = data[0].shape[0]
-                for i in range(0, n, chunk):
-                    sub = tuple(t[i:i + chunk] for t in data[:2])
-                    rows = sub[0].shape[0]
-                    total += self._loss_fn(sub, use_weights=False).item() * rows
-                    count += rows
+                i, step = 0, chunk
+                while i < n:
+                    sub_cpu = tuple(t[i:i + step] for t in data[:2])
+                    try:
+                        sub = self.move_to_device(sub_cpu)
+                        rows = sub[0].shape[0]
+                        total += self._loss_fn(sub, use_weights=False).item() * rows
+                        count += rows
+                        del sub
+                    except torch.cuda.OutOfMemoryError:
+                        if step <= 1:
+                            raise
+                        step = max(step // 2, 1)
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        print(f"[eval] OOM -- halving chunk to {step}", flush=True)
+                        continue
+                    i += rows
         return total / max(count, 1)
