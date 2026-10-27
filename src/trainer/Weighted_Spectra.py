@@ -90,22 +90,33 @@ class Weighted_Spectra_Trainer(Spectra_Regularization_Trainer):
         # altered to only train on the per ky loss
         return flux_per_ky_loss
 
-    def get_test_loss(self, dataloader):
+    def get_test_loss(self, dataloader, chunk=2_000_000):
         """
-        Calculate average test loss safely (no gradient tracking).
+        Full-test-set loss, UNWEIGHTED, computed in bounded memory.
 
         NOTE use_weights=False is deliberate and must stay. Test rows carry no
-        importance weights, and the reported number has to remain comparable to
-        every historical `BAL Test Loss` / `BAL/test_loss`. Never weight the
-        eval metric -- weighting is a training-distribution correction only.
+        importance weights, and the number has to remain comparable to every
+        historical `BAL Test Loss` / `BAL/test_loss`. Never weight the eval
+        metric -- weighting is a training-distribution correction only.
+
+        WHY THE CHUNKING: both entry points build the test loader with
+        `batch_size=10**6` (finetuning.py:167, bal_finetune.py:102, set by
+        38ce8a4 to fix the CGYRO batch-mean bug on 556 test rows). TGLF's test
+        split is 901,290 samples x 24 ky = 21,630,960 rows, so ONE batch
+        through Linear(32->256) needs 20.63 GiB and OOMs even a 32 GB card when
+        lanes share it. Chunking the forward costs nothing and is EXACT: every
+        row carries 4 channels, so weighting each chunk's mean by its row count
+        reproduces the single-batch row-mean to float precision.
         """
         self.model.eval()
-        losses = []
-
+        total, count = 0.0, 0
         with torch.no_grad():
             for data in dataloader:
                 data = self.move_to_device(data)
-                loss = self._loss_fn(data, use_weights=False)
-                losses.append(loss.item())
-
-        return sum(losses) / len(losses)
+                n = data[0].shape[0]
+                for i in range(0, n, chunk):
+                    sub = tuple(t[i:i + chunk] for t in data[:2])
+                    rows = sub[0].shape[0]
+                    total += self._loss_fn(sub, use_weights=False).item() * rows
+                    count += rows
+        return total / max(count, 1)
