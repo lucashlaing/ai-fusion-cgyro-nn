@@ -3,6 +3,7 @@ import time
 import numpy as np
 from bal.DIRECT import DIRECT 
 from bal.BaseAcq import BaseAcquisitionStrategy
+from bal.CoresetAcq import GloUniLeverage, GloUniLightweight
 
 
 class RandomStrategy(BaseAcquisitionStrategy):
@@ -588,6 +589,9 @@ class RhoRankLCMD(BaseAcquisitionStrategy):
 
 
 STRATEGY_HANDLER = {
+    # coreset baselines (src/bal/CoresetAcq.py)
+    "glo_uni_lev": GloUniLeverage,
+    "glo_uni_lw": GloUniLightweight,
     "random": RandomStrategy,
     "eig": EIGStrategy,
     "eig_stratified": EIGStratifiedStrategy,
