@@ -4,6 +4,7 @@ import numpy as np
 from bal.DIRECT import DIRECT 
 from bal.BaseAcq import BaseAcquisitionStrategy
 from bal.CoresetAcq import GloUniLeverage, GloUniLightweight
+from bal.CoresetAcq import StratUniLeverage, ResUniLeverage, RhoUniLeverage
 
 
 class RandomStrategy(BaseAcquisitionStrategy):
@@ -632,4 +633,11 @@ STRATEGY_HANDLER = {
     #     coreset constructions, sampled prop-to-score instead of top-k ---
     "glo_uni_lev": GloUniLeverage,
     "glo_uni_lw": GloUniLightweight,
+    # Leverage under the other three separators. Score is computed once over
+    # the whole candidate batch and sliced per stratum by the separator, so
+    # each stratum samples prop-to-GLOBAL leverage restricted to its members
+    # -- identical handling to the ow/eig arms.
+    "strat_uni_lev": StratUniLeverage,
+    "res_uni_lev": ResUniLeverage,
+    "rho_uni_lev": RhoUniLeverage,
 }
