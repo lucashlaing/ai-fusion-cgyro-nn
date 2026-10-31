@@ -305,3 +305,50 @@ class GloUniLightweight(CoresetMixin, BaseAcquisitionStrategy):
             selector_func=self._select_score_sample,
             score_func=self._compute_lightweight_score,
         )
+
+
+class StratUniLeverage(CoresetMixin, BaseAcquisitionStrategy):
+    """Residual strata + uniform budget + leverage-score coreset sampling."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Stratified Separation, Uniform Budgeting, Leverage-Coreset Sampling Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_stratified_residual,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_score_sample,
+            score_func=self._compute_leverage_score,
+            num_strata=getattr(self.cfg, 'num_strata', 3),
+        )
+
+
+class ResUniLeverage(CoresetMixin, BaseAcquisitionStrategy):
+    """Residual classes + uniform budget + leverage-score coreset sampling."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Residual-Classes Separation, Uniform Budgeting, Leverage-Coreset Sampling Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_residual_classes,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_score_sample,
+            score_func=self._compute_leverage_score,
+            num_classes=getattr(self.cfg, 'num_classes', 3),
+        )
+
+
+class RhoUniLeverage(CoresetMixin, BaseAcquisitionStrategy):
+    """Rho strata + uniform budget + leverage-score coreset sampling."""
+    def acquire(self, candidates, trainer, lowerModel):
+        print("Running Rho Separation, Uniform Budgeting, Leverage-Coreset Sampling Pipeline...")
+        if isinstance(candidates, tuple): candidates = candidates[0]
+
+        return self._acquisition_pipeline(
+            candidates, trainer, lowerModel,
+            separator_func=self._separate_rho,
+            budgeter_func=self._budget_uniform,
+            selector_func=self._select_score_sample,
+            score_func=self._compute_leverage_score,
+        )
